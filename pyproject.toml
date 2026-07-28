@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vbwd-plugin-office"
+version = "0.1.0"
+description = "VBWD backend plugin: office (VBWD Office) — self-hosted document suite"
+requires-python = ">=3.11"
+license = { text = "BSL-1.1" }
+# No third-party runtime dependencies in this phase: Flask / SQLAlchemy /
+# Alembic come from the vbwd-backend host.
+dependencies = []
+
+[tool.setuptools]
+# The repo root IS the plugins/office/ directory; remap it so the wheel
+# exposes the `plugins.office` package that runtime imports expect. A plain
+# `packages = ["office"]` would install a TOP-LEVEL `office`, which the plugin
+# manager could never find (the S146 wheel lesson).
+package-dir = { "plugins.office" = "." }
+packages = [
+    "plugins.office",
+    "plugins.office.office",
+    "plugins.office.office.storage",
+    "plugins.office.office.models",
+    "plugins.office.office.repositories",
+    "plugins.office.office.services",
+]
+
+[tool.setuptools.package-data]
+# Ship everything a pip-installed plugin needs to be self-complete: the config
+# JSON and the Alembic migrations (the shared backend env.py resolves
+# version_locations from the installed package path).
+"plugins.office" = [
+    "*.json",
+    "migrations/*.py",
+    "migrations/**/*.py",
+]

@@ -1,0 +1,9 @@
+# office (VBWD Office) runtime dependencies.
+#
+# openpyxl (S147-4) — .xlsx read/write for VBWD Spreadsheets import/export.
+# Optional at the CODE level (sheet_import_export.py raises
+# OfficeSheetUnavailableFormatError -> a clean 501 if this is ever absent at
+# runtime, never a silent, lossy xlsx path) but declared here so it IS
+# installed in every environment that runs this plugin — the image installs
+# each plugin's own requirements.txt, never a plugin's ad-hoc pip call.
+openpyxl==3.1.5

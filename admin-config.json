@@ -1,0 +1,110 @@
+{
+  "tabs": [
+    {
+      "id": "general",
+      "label": "General",
+      "fields": [
+        {
+          "key": "debug_mode",
+          "label": "Debug mode",
+          "component": "checkbox",
+          "description": "Enable verbose VBWD Office plugin logging (development only)."
+        }
+      ]
+    },
+    {
+      "id": "uploads",
+      "label": "Uploads & quota",
+      "fields": [
+        {
+          "key": "max_upload_bytes",
+          "label": "Max upload size (bytes)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "description": "Largest single file a user may upload into VBWD Space. Default 52428800 (50 MiB)."
+        },
+        {
+          "key": "free_quota_bytes",
+          "label": "Free-tier storage quota (bytes)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "description": "Total storage a free-tier user may hold across all documents. Default 1073741824 (1 GiB)."
+        },
+        {
+          "key": "preview_mime_allowlist",
+          "label": "Preview MIME allow-list",
+          "component": "textarea",
+          "description": "MIME types the server will render an inline preview for (one per line / JSON array). Everything else downloads as an attachment."
+        }
+      ]
+    },
+    {
+      "id": "sharing",
+      "label": "Sharing & public links",
+      "fields": [
+        {
+          "key": "public_share_rate_limit_per_minute",
+          "label": "Public share rate limit (requests/minute)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "description": "Per-IP cap on the /public/<token>* routes (metadata, content, unlock). Guards against token/password enumeration."
+        },
+        {
+          "key": "share_access_log_retention_days",
+          "label": "Share access log retention (days)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "description": "How long office_share_access audit rows are kept before an operator-run prune removes them."
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "label": "Docs editor & AI helper",
+      "fields": [
+        {
+          "key": "edit_lease_seconds",
+          "label": "Edit lease lifetime (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 10,
+          "description": "How long an editor holds exclusive edit access to a Doc before it lapses. Renewed by autosave / heartbeat while the document stays open."
+        },
+        {
+          "key": "ai_connection_slug",
+          "label": "AI helper LLM connection slug",
+          "component": "input",
+          "description": "The admin-managed LLM connection slug the AI helper addresses. Leave blank to use the active default connection; an unknown/inactive slug also falls back to the default."
+        },
+        {
+          "key": "ai_monthly_call_budget",
+          "label": "AI helper monthly call budget (per user)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "description": "Default monthly AI-helper call budget per user. A paid plan can override this via the 'office.ai_monthly_call_budget' entitlement feature."
+        },
+        {
+          "key": "ai_max_selection_chars",
+          "label": "AI helper max selection length (characters)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "description": "Hard cap on the selected text forwarded to the LLM per AI-helper call, independent of what the client sends."
+        },
+        {
+          "key": "ai_max_context_chars",
+          "label": "AI helper max surrounding context (characters)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "description": "Hard cap on the surrounding-text window (before/after the selection) forwarded to the LLM."
+        }
+      ]
+    }
+  ]
+}

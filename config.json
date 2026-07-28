@@ -1,0 +1,20 @@
+{
+  "debug_mode": false,
+  "max_upload_bytes": 52428800,
+  "free_quota_bytes": 1073741824,
+  "preview_mime_allowlist": [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+    "text/plain"
+  ],
+  "public_share_rate_limit_per_minute": 60,
+  "share_access_log_retention_days": 90,
+  "edit_lease_seconds": 90,
+  "ai_connection_slug": "",
+  "ai_monthly_call_budget": 100,
+  "ai_max_selection_chars": 8000,
+  "ai_max_context_chars": 2000
+}
