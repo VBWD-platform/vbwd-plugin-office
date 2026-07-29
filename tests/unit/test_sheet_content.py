@@ -15,12 +15,20 @@ from plugins.office.office.services.exceptions import (
 )
 from plugins.office.office.services.sheet_content import (
     SheetCeiling,
+    SheetPresentation,
+    apply_presentation,
     build_workbook_from_model,
     coerce_literal_input,
     empty_workbook_bytes,
     empty_workbook_model,
+    extract_presentation,
+    format_range_within_sheet,
+    normalize_cell_style,
+    parse_range_within_ceiling,
     parse_reference_within_ceiling,
     parse_workbook_bytes,
+    range_contains,
+    ranges_overlap,
     serialize_workbook_model,
     serialize_workbook_to_model,
 )
@@ -184,3 +192,136 @@ def test_coerce_literal_input_supports_number_text_boolean_and_none():
 def test_coerce_literal_input_rejects_an_unsupported_type():
     with pytest.raises(OfficeSheetContentInvalidError):
         coerce_literal_input(["not", "a", "scalar"])
+
+
+# ---------------------------------------------------------------------------
+# S147-4 (drag/toolbar slice) — the styles/merges presentation side-channel.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_presentation_reads_styles_and_merges_from_a_raw_model():
+    model = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "cells": {},
+                "styles": {"A1": {"bold": True}},
+                "merges": ["A1:C1"],
+            }
+        ],
+        "active_sheet": "Sheet1",
+    }
+    presentation = extract_presentation(model)
+    assert presentation.styles == {"Sheet1": {"A1": {"bold": True}}}
+    assert presentation.merges == {"Sheet1": ["A1:C1"]}
+
+
+def test_extract_presentation_tolerates_a_model_with_no_presentation_keys():
+    presentation = extract_presentation(empty_workbook_model())
+    assert presentation.styles == {}
+    assert presentation.merges == {}
+
+
+def test_apply_presentation_injects_styles_and_merges_into_a_fresh_model():
+    model = {"sheets": [{"name": "Sheet1", "cells": {}}], "active_sheet": "Sheet1"}
+    presentation = SheetPresentation(
+        styles={"Sheet1": {"A1": {"bold": True}}}, merges={"Sheet1": ["A1:B1"]}
+    )
+    result = apply_presentation(model, presentation)
+    assert result["sheets"][0]["styles"] == {"A1": {"bold": True}}
+    assert result["sheets"][0]["merges"] == ["A1:B1"]
+
+
+def test_apply_presentation_is_a_noop_when_nothing_is_tracked_for_a_sheet():
+    model = {"sheets": [{"name": "Sheet1", "cells": {}}], "active_sheet": "Sheet1"}
+    apply_presentation(model, SheetPresentation())
+    assert "styles" not in model["sheets"][0]
+    assert "merges" not in model["sheets"][0]
+
+
+def test_normalize_cell_style_accepts_known_fields():
+    style = normalize_cell_style(
+        {
+            "format": "currency",
+            "decimals": 2,
+            "bold": True,
+            "italic": False,
+            "align": "right",
+        }
+    )
+    assert style == {
+        "format": "currency",
+        "decimals": 2,
+        "bold": True,
+        "italic": False,
+        "align": "right",
+    }
+
+
+def test_normalize_cell_style_rejects_an_unknown_number_format():
+    with pytest.raises(OfficeSheetContentInvalidError):
+        normalize_cell_style({"format": "scientific"})
+
+
+def test_normalize_cell_style_rejects_a_non_boolean_bold():
+    with pytest.raises(OfficeSheetContentInvalidError):
+        normalize_cell_style({"bold": "yes"})
+
+
+def test_normalize_cell_style_rejects_an_out_of_range_decimals():
+    with pytest.raises(OfficeSheetContentInvalidError):
+        normalize_cell_style({"decimals": 99})
+
+
+def test_normalize_cell_style_rejects_a_non_object():
+    with pytest.raises(OfficeSheetContentInvalidError):
+        normalize_cell_style("bold")
+
+
+def test_parse_range_within_ceiling_parses_two_corners():
+    cell_range = parse_range_within_ceiling("A1:C3", "Sheet1", GENEROUS_CEILING)
+    assert cell_range.start == parse_cell_reference("A1", default_sheet="Sheet1")
+    assert cell_range.end == parse_cell_reference("C3", default_sheet="Sheet1")
+
+
+def test_parse_range_within_ceiling_accepts_a_bare_single_cell():
+    cell_range = parse_range_within_ceiling("B2", "Sheet1", GENEROUS_CEILING)
+    assert (
+        cell_range.start
+        == cell_range.end
+        == parse_cell_reference("B2", default_sheet="Sheet1")
+    )
+
+
+def test_parse_range_within_ceiling_rejects_a_malformed_range():
+    with pytest.raises(OfficeSheetContentInvalidError):
+        parse_range_within_ceiling("A1:B2:C3", "Sheet1", GENEROUS_CEILING)
+
+
+def test_ranges_overlap_detects_an_overlapping_pair():
+    first = parse_range_within_ceiling("A1:C3", "Sheet1", GENEROUS_CEILING)
+    second = parse_range_within_ceiling("C3:D4", "Sheet1", GENEROUS_CEILING)
+    assert ranges_overlap(first, second) is True
+
+
+def test_ranges_overlap_is_false_for_disjoint_ranges():
+    first = parse_range_within_ceiling("A1:B2", "Sheet1", GENEROUS_CEILING)
+    second = parse_range_within_ceiling("D4:E5", "Sheet1", GENEROUS_CEILING)
+    assert ranges_overlap(first, second) is False
+
+
+def test_range_contains_a_cell_inside_the_rectangle():
+    cell_range = parse_range_within_ceiling("A1:C3", "Sheet1", GENEROUS_CEILING)
+    assert (
+        range_contains(cell_range, parse_cell_reference("B2", default_sheet="Sheet1"))
+        is True
+    )
+    assert (
+        range_contains(cell_range, parse_cell_reference("D4", default_sheet="Sheet1"))
+        is False
+    )
+
+
+def test_format_range_within_sheet_normalizes_corner_order():
+    cell_range = parse_range_within_ceiling("C3:A1", "Sheet1", GENEROUS_CEILING)
+    assert format_range_within_sheet(cell_range) == "A1:C3"

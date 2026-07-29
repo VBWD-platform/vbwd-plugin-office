@@ -7,3 +7,13 @@
 # installed in every environment that runs this plugin — the image installs
 # each plugin's own requirements.txt, never a plugin's ad-hoc pip call.
 openpyxl==3.1.5
+
+# python-docx (S147-3 toolbar bundle) — .docx export for VBWD Docs, rendered
+# from the JSON content model (never from stored HTML, epic D7). PDF export
+# reuses the CORE PdfService/WeasyPrint seam instead of a new dependency.
+python-docx==1.1.2
+
+# Spreadsheets PDF export (S147-4 drag/toolbar slice) needs no new
+# dependency: it renders an HTML table through the CORE PdfService/
+# WeasyPrint seam already used above by VBWD Docs' own PDF export — see
+# sheet_editor_service.py's OfficeSheetEditorService._render_pdf.

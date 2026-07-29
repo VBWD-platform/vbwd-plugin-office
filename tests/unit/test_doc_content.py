@@ -6,6 +6,7 @@ import pytest
 
 from plugins.office.office.services.doc_content import (
     EMPTY_CONTENT_MODEL,
+    collect_referenced_asset_node_ids,
     empty_content_bytes,
     parse_content_bytes,
     serialize_content_model,
@@ -154,3 +155,96 @@ def test_parse_content_bytes_rejects_invalid_json():
 def test_validate_content_model_rejects_a_non_object():
     with pytest.raises(OfficeDocContentInvalidError):
         validate_content_model(["not", "an", "object"])
+
+
+# ---------------------------------------------------------------------------
+# S147-3 toolbar bundle — collect_referenced_asset_node_ids (the ACL boundary
+# doc_assets.OfficeDocAssetService.get_asset checks membership against).
+# ---------------------------------------------------------------------------
+
+
+def test_collect_referenced_asset_node_ids_finds_every_image_reference():
+    model = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {"src": "office-asset:11111111-1111-1111-1111-111111111111"},
+            },
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "image",
+                        "attrs": {
+                            "src": "office-asset:22222222-2222-2222-2222-222222222222"
+                        },
+                    }
+                ],
+            },
+        ],
+    }
+    assert collect_referenced_asset_node_ids(model) == {
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    }
+
+
+def test_collect_referenced_asset_node_ids_is_empty_for_a_doc_with_no_images():
+    assert collect_referenced_asset_node_ids(EMPTY_CONTENT_MODEL) == set()
+
+
+# ---------------------------------------------------------------------------
+# S147-3 toolbar bundle — the ``textStyle`` mark (font family / font size).
+# Only the two allow-listed attrs, in a safe format, are ever accepted; a
+# free-form ``style`` string would be a CSS-injection surface into the
+# HTML/PDF export path (doc_export_html.py wraps it in a bare ``style=""``).
+# ---------------------------------------------------------------------------
+
+
+def _text_node_with_style(attrs: dict) -> dict:
+    return {
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "styled",
+                        "marks": [{"type": "textStyle", "attrs": attrs}],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_allows_a_safe_font_family_and_font_size():
+    model = _text_node_with_style(
+        {"fontFamily": "'Times New Roman', serif", "fontSize": "16px"}
+    )
+    validate_content_model(model)  # does not raise
+
+
+def test_allows_a_textstyle_mark_with_no_attrs():
+    model = _text_node_with_style({})
+    validate_content_model(model)  # does not raise
+
+
+def test_rejects_a_textstyle_mark_with_an_unknown_attr():
+    model = _text_node_with_style({"color": "red"})
+    with pytest.raises(OfficeDocContentInvalidError):
+        validate_content_model(model)
+
+
+def test_rejects_a_font_family_containing_css_injection_characters():
+    model = _text_node_with_style({"fontFamily": "Arial; } body { display: none"})
+    with pytest.raises(OfficeDocContentInvalidError):
+        validate_content_model(model)
+
+
+def test_rejects_a_font_size_with_no_recognised_unit():
+    model = _text_node_with_style({"fontSize": "16"})
+    with pytest.raises(OfficeDocContentInvalidError):
+        validate_content_model(model)

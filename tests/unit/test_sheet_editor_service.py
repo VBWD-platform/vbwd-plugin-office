@@ -123,6 +123,23 @@ class _FakeLeaseRepository:
         self._leases.pop(node_id, None)
 
 
+class _FakePdfService:
+    """Stands in for the CORE ``pdf_service``. Records what the sheet service
+    asked it to render, so a test can assert the delegation contract instead of
+    re-testing core's PDF machinery."""
+
+    def __init__(self) -> None:
+        self.registered_paths = []
+        self.rendered = []
+
+    def register_plugin_template_path(self, path) -> None:
+        self.registered_paths.append(path)
+
+    def render(self, template_name, context) -> bytes:
+        self.rendered.append((template_name, context))
+        return b"%PDF-1.4 fake"
+
+
 def _build_service(
     access_by_user, document, model=None, max_rows=100_000, max_columns=1_000
 ):
@@ -144,6 +161,7 @@ def _build_service(
         edit_lease_service=edit_lease_service,
         max_rows=max_rows,
         max_columns=max_columns,
+        pdf_service=_FakePdfService(),
     )
     return service, node_id, document_service
 
@@ -299,6 +317,285 @@ def test_recalc_forces_a_full_recalculation_and_persists_it():
 
     assert result.changes == {"Sheet1!A1": 2.0}  # stale cache (999) corrected
     assert len(document_service.saved_versions) == 1
+
+
+# ---------------------------------------------------------------------------
+# S147-4 (drag/toolbar slice) — cell styles, merges, the fill handle
+# (reference-translated copy), and the PDF export format.
+# ---------------------------------------------------------------------------
+
+
+def test_save_cells_with_a_style_change_persists_and_survives_a_reopen():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+
+    service.save_cells(
+        owner_id,
+        node_id,
+        [
+            {
+                "sheet": "Sheet1",
+                "address": "A1",
+                "style": {"bold": True, "format": "currency"},
+            }
+        ],
+        base_version_no=0,
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["styles"] == {
+        "A1": {"bold": True, "format": "currency"}
+    }
+    # The stored VALUE is untouched by formatting — the engine keeps
+    # computing on the real number, never a formatted string.
+    assert "A1" not in reopened.workbook_model["sheets"][0]["cells"]
+
+
+def test_save_cells_style_null_clears_a_previously_set_style():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+    service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "A1", "style": {"bold": True}}],
+        base_version_no=0,
+    )
+
+    service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "A1", "style": None}],
+        base_version_no=0,
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0].get("styles", {}) == {}
+
+
+def test_save_cells_an_invalid_style_raises_and_writes_nothing():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, document_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document
+    )
+
+    from plugins.office.office.services.exceptions import OfficeSheetContentInvalidError
+
+    with pytest.raises(OfficeSheetContentInvalidError):
+        service.save_cells(
+            owner_id,
+            node_id,
+            [{"sheet": "Sheet1", "address": "A1", "style": {"format": "scientific"}}],
+            base_version_no=0,
+        )
+    assert document_service.saved_versions == []
+
+
+def test_save_cells_merge_persists_and_survives_a_reopen():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+
+    service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "merge": "A1:C1"}],
+        base_version_no=0,
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["merges"] == ["A1:C1"]
+
+
+def test_save_cells_merge_replaces_an_overlapping_existing_merge():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+    service.save_cells(
+        owner_id, node_id, [{"sheet": "Sheet1", "merge": "A1:B1"}], base_version_no=0
+    )
+
+    service.save_cells(
+        owner_id, node_id, [{"sheet": "Sheet1", "merge": "B1:C2"}], base_version_no=0
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["merges"] == ["B1:C2"]
+
+
+def test_save_cells_unmerge_removes_the_covering_merge():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+    service.save_cells(
+        owner_id, node_id, [{"sheet": "Sheet1", "merge": "A1:C1"}], base_version_no=0
+    )
+
+    service.save_cells(
+        owner_id, node_id, [{"sheet": "Sheet1", "unmerge": "B1"}], base_version_no=0
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0].get("merges", []) == []
+
+
+def test_recalc_preserves_styles_and_merges():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "cells": {"A1": {"f": "=1+1", "v": 999.0}},
+                "styles": {"A1": {"bold": True}},
+                "merges": ["A1:B1"],
+            }
+        ],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    service.recalc(owner_id, node_id)
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["styles"] == {"A1": {"bold": True}}
+    assert reopened.workbook_model["sheets"][0]["merges"] == ["A1:B1"]
+
+
+def test_save_cells_fill_from_translates_relative_references():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "cells": {
+                    "A1": {"v": 1.0},
+                    "A2": {"v": 2.0},
+                    "B1": {"f": "=A1*2", "v": 2.0},
+                },
+            }
+        ],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    result = service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "B2", "fill_from": "B1"}],
+        base_version_no=0,
+    )
+
+    assert result.changes["Sheet1!B2"] == 4.0  # =A2*2 after translation
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["cells"]["B2"]["f"] == "=(A2*2)"
+
+
+def test_save_cells_fill_from_keeps_absolute_references_fixed():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "cells": {
+                    "A1": {"v": 10.0},
+                    "B1": {"f": "=$A$1+1", "v": 11.0},
+                },
+            }
+        ],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    result = service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "B2", "fill_from": "B1"}],
+        base_version_no=0,
+    )
+
+    assert result.changes["Sheet1!B2"] == 11.0  # $A$1 stayed fixed
+
+
+def test_save_cells_fill_from_copies_a_literal_value_without_translation():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [{"name": "Sheet1", "cells": {"A1": {"v": "hello"}}}],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    result = service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "A2", "fill_from": "A1"}],
+        base_version_no=0,
+    )
+
+    assert result.changes["Sheet1!A2"] == "hello"
+
+
+def test_save_cells_fill_from_also_copies_the_source_cells_style():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service({owner_id: ACCESS_OWNER}, document)
+    service.save_cells(
+        owner_id,
+        node_id,
+        [
+            {"sheet": "Sheet1", "address": "A1", "value": 5},
+            {"sheet": "Sheet1", "address": "A1", "style": {"bold": True}},
+        ],
+        base_version_no=0,
+    )
+
+    service.save_cells(
+        owner_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "A2", "fill_from": "A1"}],
+        base_version_no=0,
+    )
+
+    reopened = service.open_sheet(owner_id, node_id)
+    assert reopened.workbook_model["sheets"][0]["styles"]["A2"] == {"bold": True}
+
+
+def test_export_workbook_pdf_format_returns_pdf_bytes():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [{"name": "Sheet1", "cells": {"A1": {"f": "=2+2", "v": 0.0}}}],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    data, mimetype, filename = service.export_workbook(owner_id, node_id, "pdf")
+
+    assert data.startswith(b"%PDF")
+    assert mimetype == "application/pdf"
+    # Delegation, not a second PDF engine: the sheet service hands core's
+    # pdf_service an HTML body and the sheet template, exactly as VBWD Docs
+    # does. It also renders the COMPUTED value (4), never the formula source.
+    template_name, context = service._pdf_service.rendered[-1]
+    assert template_name == "office_sheet.html"
+    assert "4" in context["body_html"]
+    assert "=2+2" not in context["body_html"]
+    assert filename == "Budget.pdf"
 
 
 def test_export_workbook_recalculates_before_exporting():

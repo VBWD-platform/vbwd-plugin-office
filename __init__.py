@@ -111,6 +111,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # request/worker. Ops-tunable, never hardcoded at a call site.
     "sheet_max_rows": 100000,
     "sheet_max_columns": 1000,
+    # S147-3 toolbar bundle — "insert table from file" row/column cap: a Doc
+    # table is meant to stay small (unlike VBWD Spreadsheets' much larger
+    # ceiling above); a bigger source file is rejected with a clear 413
+    # rather than freezing the browser rendering an enormous inserted
+    # table. Ops-tunable, never hardcoded at a call site.
+    "doc_table_import_max_rows": 500,
+    "doc_table_import_max_columns": 50,
 }
 
 
@@ -236,6 +243,7 @@ class OfficePlugin(BasePlugin):
             return
         self._claim_filespace(container)
         self._register_di_providers(container)
+        self._register_pdf_template_path(container)
 
     def _claim_filespace(self, container: Any) -> None:
         """Write the filespace claim marker so ``var/office/`` exists on disk
@@ -249,6 +257,26 @@ class OfficePlugin(BasePlugin):
             )
         except Exception as filespace_error:  # noqa: BLE001 — never abort enable
             logger.warning("[office] Failed to claim filespace: %s", filespace_error)
+
+    def _register_pdf_template_path(self, container: Any) -> None:
+        """S147-3 toolbar bundle — PDF export. Registers ``office/office/
+        templates/pdf/`` with the CORE PdfService (mirrors ``plugins/
+        booking/__init__.py``'s own registration exactly); the export route
+        also self-heals this call for the case ``on_enable`` did not run
+        (e.g. a bare unit test), so this is a best-effort convenience, not a
+        requirement for the export route to work."""
+        try:
+            import os
+
+            pdf_service = container.pdf_service()
+            template_dir = os.path.join(
+                os.path.dirname(__file__), "office", "templates", "pdf"
+            )
+            pdf_service.register_plugin_template_path(template_dir)
+        except Exception as pdf_template_error:  # noqa: BLE001 — never abort enable
+            logger.warning(
+                "[office] Failed to register PDF template path: %s", pdf_template_error
+            )
 
     def _register_di_providers(self, container: Any) -> None:
         """Register ``office_meta_service`` and the four S147-1 repositories.
@@ -619,7 +647,11 @@ def build_doc_editor_service():
 
 def build_sheet_editor_service():
     """Composition root for :class:`OfficeSheetEditorService` (fresh
-    ``db.session``); the routes' single entry point into VBWD Spreadsheets."""
+    ``db.session``); the routes' single entry point into VBWD Spreadsheets.
+
+    ``pdf_service`` (drag/toolbar slice — PDF export) resolves the CORE
+    ``pdf_service`` through the container, the exact same seam
+    ``build_doc_export_service`` below uses — no second PDF renderer."""
     from vbwd.extensions import db
 
     from plugins.office.office.repositories.office_document_repository import (
@@ -643,8 +675,93 @@ def build_sheet_editor_service():
         document_service=build_document_service(),
         access_resolver=build_access_resolver(),
         edit_lease_service=build_edit_lease_service(),
+        pdf_service=current_app.container.pdf_service(),
         max_rows=config.get("sheet_max_rows", DEFAULT_CONFIG["sheet_max_rows"]),
         max_columns=config.get(
             "sheet_max_columns", DEFAULT_CONFIG["sheet_max_columns"]
         ),
+    )
+
+
+# --------------------------------------------------------------------------
+# S147-3 toolbar bundle — image assets, "insert table from file", and
+# export (PDF/DOCX/Markdown) for VBWD Docs. Reuses the SAME node/document/
+# access-resolver composition roots above (DRY); nothing here needed a new
+# DI provider.
+# --------------------------------------------------------------------------
+
+
+def build_doc_asset_service():
+    """Composition root for :class:`OfficeDocAssetService` — image upload/
+    serving for the Docs editor's "insert image" toolbar action."""
+    from vbwd.extensions import db
+
+    from plugins.office.office.repositories.office_document_repository import (
+        OfficeDocumentRepository,
+    )
+    from plugins.office.office.repositories.office_node_repository import (
+        OfficeNodeRepository,
+    )
+    from plugins.office.office.services.doc_assets import OfficeDocAssetService
+
+    return OfficeDocAssetService(
+        node_repository=OfficeNodeRepository(db.session),
+        document_repository=OfficeDocumentRepository(db.session),
+        document_service=build_document_service(),
+        access_resolver=build_access_resolver(),
+    )
+
+
+def build_doc_table_import_service():
+    """Composition root for :class:`OfficeDocTableImportService` — table
+    recognition from an uploaded ``.csv``/``.xlsx`` for the Docs editor's
+    "insert table from file" toolbar action."""
+    from vbwd.extensions import db
+
+    from plugins.office.office.repositories.office_document_repository import (
+        OfficeDocumentRepository,
+    )
+    from plugins.office.office.repositories.office_node_repository import (
+        OfficeNodeRepository,
+    )
+    from plugins.office.office.services.doc_table_import import (
+        OfficeDocTableImportService,
+    )
+
+    config = _current_plugin_config()
+    return OfficeDocTableImportService(
+        node_repository=OfficeNodeRepository(db.session),
+        document_repository=OfficeDocumentRepository(db.session),
+        access_resolver=build_access_resolver(),
+        max_rows=config.get(
+            "doc_table_import_max_rows", DEFAULT_CONFIG["doc_table_import_max_rows"]
+        ),
+        max_columns=config.get(
+            "doc_table_import_max_columns",
+            DEFAULT_CONFIG["doc_table_import_max_columns"],
+        ),
+    )
+
+
+def build_doc_export_service():
+    """Composition root for :class:`OfficeDocExportService` — Print/PDF/
+    DOCX/Markdown export. Resolves the CORE ``pdf_service`` through the
+    container rather than building a WeasyPrint adapter itself (the same
+    seam ``plugins/booking`` already uses for its own PDF export)."""
+    from vbwd.extensions import db
+
+    from plugins.office.office.repositories.office_document_repository import (
+        OfficeDocumentRepository,
+    )
+    from plugins.office.office.repositories.office_node_repository import (
+        OfficeNodeRepository,
+    )
+    from plugins.office.office.services.doc_export import OfficeDocExportService
+
+    return OfficeDocExportService(
+        node_repository=OfficeNodeRepository(db.session),
+        document_repository=OfficeDocumentRepository(db.session),
+        document_service=build_document_service(),
+        access_resolver=build_access_resolver(),
+        pdf_service=current_app.container.pdf_service(),
     )

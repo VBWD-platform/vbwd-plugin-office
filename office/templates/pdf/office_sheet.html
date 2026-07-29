@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <style>
+    /* Landscape, unlike office_doc.html: a spreadsheet is wider than it is
+       tall, and portrait would clip or shrink the right-hand columns of even a
+       modest model. */
+    @page {
+      size: A4 landscape;
+      margin: 12mm;
+    }
+    body {
+      font-family: "DejaVu Sans", Arial, sans-serif;
+      color: #1a202c;
+      font-size: 9pt;
+      line-height: 1.35;
+    }
+    h1.sheet-title {
+      font-size: 16pt;
+      margin: 0 0 6mm;
+      border-bottom: 2px solid #1a202c;
+      padding-bottom: 3mm;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    table th, table td {
+      border: 1px solid #cbd5e0;
+      padding: 1.2mm 2mm;
+      text-align: left;
+      /* Long labels must not blow a column out and push the sheet off the
+         page — wrap instead. */
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+    table th {
+      background: #f7fafc;
+      font-weight: 600;
+    }
+    /* The renderer marks numeric cells so figures align on the decimal side,
+       the way any spreadsheet prints them. */
+    table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table td.err { color: #c53030; font-weight: 600; }
+    /* Repeat the header row on every printed page of a long model. */
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+  </style>
+</head>
+<body>
+  <h1 class="sheet-title">{{ title }}</h1>
+  {{ body_html }}
+</body>
+</html>

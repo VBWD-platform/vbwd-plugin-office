@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import html
 import io
 from dataclasses import dataclass
 from typing import Optional
@@ -46,8 +47,9 @@ from plugins.office.office.services.sheet_content import (
 
 CSV_FORMAT = "csv"
 XLSX_FORMAT = "xlsx"
+PDF_FORMAT = "pdf"
 SUPPORTED_IMPORT_FORMATS = (CSV_FORMAT, XLSX_FORMAT)
-SUPPORTED_EXPORT_FORMATS = (CSV_FORMAT, XLSX_FORMAT)
+SUPPORTED_EXPORT_FORMATS = (CSV_FORMAT, XLSX_FORMAT, PDF_FORMAT)
 
 #: openpyxl truncates sheet titles at 31 characters — enforced on export so
 #: a long Doc/Sheet name never raises deep inside the library call.
@@ -55,6 +57,7 @@ XLSX_MAX_SHEET_TITLE_LENGTH = 31
 
 XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 CSV_MIME_TYPE = "text/csv"
+PDF_MIME_TYPE = "application/pdf"
 
 
 @dataclass(frozen=True)
@@ -219,3 +222,42 @@ def export_xlsx(workbook: Workbook) -> bytes:
     output = io.BytesIO()
     output_workbook.save(output)
     return output.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# S147-4 (drag/toolbar slice) — PDF export, the third format in the export
+# dropdown alongside CSV/XLSX above. Rides the CORE ``PdfService``/WeasyPrint
+# seam (``OfficeSheetEditorService._render_pdf``) the exact same way VBWD
+# Docs' own PDF export already does (``doc_export.py``) — no second PDF
+# dependency/renderer for this plugin (DRY). This module's job is only to
+# render the sheet as an HTML ``<table>``; the PDF conversion itself is the
+# core service's responsibility. Renders the CURRENT (caller-recalculated)
+# computed values only, same as ``export_csv`` — a PDF is a rendered
+# snapshot, not an editable format, so formulas do not survive it either.
+# ---------------------------------------------------------------------------
+
+
+def render_sheet_html_table(
+    workbook: Workbook, sheet_name: Optional[str] = None
+) -> str:
+    """Render one sheet's current values as a bare HTML ``<table>`` — the
+    ``body_html`` slot ``office_sheet.html`` drops into its page chrome."""
+    name = (
+        sheet_name
+        if sheet_name in workbook.sheets
+        else next(iter(workbook.sheets), DEFAULT_SHEET_NAME)
+    )
+    sheet = workbook.sheets.get(name)
+    if sheet is None or not sheet.cells:
+        return "<p>(empty sheet)</p>"
+
+    max_row = max(row for _column, row in sheet.cells)
+    max_column = max(column for column, _row in sheet.cells)
+    rows_html = []
+    for row in range(1, max_row + 1):
+        cells_html = "".join(
+            f"<td>{html.escape(coerce_to_text(sheet.get_cell(column, row).value))}</td>"
+            for column in range(1, max_column + 1)
+        )
+        rows_html.append(f"<tr>{cells_html}</tr>")
+    return f"<table>{''.join(rows_html)}</table>"

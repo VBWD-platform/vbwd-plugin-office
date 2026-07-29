@@ -40,9 +40,13 @@ from .services.exceptions import (
     OfficeAiDisabledError,
     OfficeAiInvalidCapabilityError,
     OfficeAiProviderError,
+    OfficeDocAssetInvalidError,
     OfficeDocContentInvalidError,
+    OfficeDocExportFormatError,
+    OfficeDocExportUnavailableError,
     OfficeDocLockedError,
     OfficeDocStaleVersionError,
+    OfficeDocTableImportFormatError,
     OfficeInvalidNodeError,
     OfficeNodeNotFoundError,
     OfficeSheetCeilingExceededError,
@@ -110,6 +114,24 @@ def _sheet_editor_service():
     from plugins.office import build_sheet_editor_service
 
     return build_sheet_editor_service()
+
+
+def _doc_asset_service():
+    from plugins.office import build_doc_asset_service
+
+    return build_doc_asset_service()
+
+
+def _doc_table_import_service():
+    from plugins.office import build_doc_table_import_service
+
+    return build_doc_table_import_service()
+
+
+def _doc_export_service():
+    from plugins.office import build_doc_export_service
+
+    return build_doc_export_service()
 
 
 def _admin_service():
@@ -865,6 +887,161 @@ def doc_ai(node_id):
 
 
 # ---------------------------------------------------------------------------
+# S147-3 toolbar bundle — image assets, "insert table from file", and
+# export (PDF/DOCX/Markdown) for VBWD Docs. Same session-only auth bar as
+# the rest of Docs above; access decisions delegate to the SAME
+# AccessResolver via the new Doc-specific services (doc_assets.py,
+# doc_table_import.py, doc_export.py).
+# ---------------------------------------------------------------------------
+
+
+@office_bp.route(f"{PLAY}/docs/<node_id>/assets", methods=["POST"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def upload_doc_asset(node_id):
+    """Insert-image: uploads into the caller's hidden ``_assets`` folder and
+    returns the ``office-asset:<id>`` src the editor writes into an image
+    node — never a public URL (one storage path, one quota, one ACL)."""
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "file is required"}), 400
+    data = upload.stream.read()
+
+    try:
+        result = _doc_asset_service().upload_asset(
+            g.user.id, node_id, upload.filename, data
+        )
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeShareForbiddenError:
+        return jsonify({"error": "Forbidden"}), 403
+    except OfficeDocAssetInvalidError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeUploadTooLargeError as error:
+        return jsonify({"error": str(error)}), 413
+    except OfficeQuotaExceededError as error:
+        return jsonify({"error": str(error)}), 413
+
+    db.session.commit()
+    return jsonify(result), 201
+
+
+@office_bp.route(f"{PLAY}/docs/<node_id>/assets/<asset_node_id>", methods=["GET"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def get_doc_asset(node_id, asset_node_id):
+    """Streams an inserted image's bytes — reachable by anyone with at
+    least ``view`` access to the DOC (not just the asset owner), which is
+    what makes a shared Doc's images render for the recipient. Only an
+    asset actually referenced by THIS document's current content is ever
+    served (see doc_assets.py's module docstring)."""
+    try:
+        asset_node, asset_document, _version, content = _doc_asset_service().get_asset(
+            g.user.id, node_id, asset_node_id
+        )
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeDocContentInvalidError:
+        current_app.logger.error(
+            "[office] stored doc content invalid for node %s", node_id
+        )
+        return jsonify({"error": "Document content is corrupted"}), 500
+    except OfficeContentIntegrityError:
+        current_app.logger.error(
+            "[office] doc asset content integrity check failed for node %s", node_id
+        )
+        return jsonify({"error": "Content integrity check failed"}), 500
+
+    return _send_document_content(asset_node, asset_document, content)
+
+
+DOC_TABLE_IMPORT_FORMATS = ("csv", "xlsx")
+
+
+@office_bp.route(f"{PLAY}/docs/<node_id>/table-import", methods=["POST"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def import_doc_table(node_id):
+    """Recognise a table from an uploaded .csv/.xlsx and return it as JSON
+    rows for the editor to insert as a real table node — REUSES
+    sheet_import_export.py's parser (DRY), never a second one."""
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "file is required"}), 400
+
+    import_format = (request.form.get("format") or "").lower()
+    if not import_format:
+        import_format = "xlsx" if upload.filename.lower().endswith(".xlsx") else "csv"
+    if import_format not in DOC_TABLE_IMPORT_FORMATS:
+        return (
+            jsonify(
+                {"error": f"format must be one of {list(DOC_TABLE_IMPORT_FORMATS)}"}
+            ),
+            400,
+        )
+    data = upload.stream.read()
+
+    try:
+        table = _doc_table_import_service().import_table(
+            g.user.id, node_id, data, import_format
+        )
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeShareForbiddenError:
+        return jsonify({"error": "Forbidden"}), 403
+    except OfficeDocTableImportFormatError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeSheetContentInvalidError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeSheetCeilingExceededError as error:
+        return jsonify({"error": str(error)}), 413
+    except OfficeSheetUnavailableFormatError as error:
+        return jsonify({"error": str(error)}), 501
+
+    return jsonify(table.to_dict()), 200
+
+
+DOC_EXPORT_FORMATS = ("pdf", "docx", "md")
+
+
+@office_bp.route(f"{PLAY}/docs/<node_id>/export", methods=["POST"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def export_doc(node_id):
+    """Print/PDF/DOCX/Markdown export — rendered from the JSON content
+    model, never from stored HTML (epic D7). Any resolvable access may
+    export (reading, not writing)."""
+    export_format = (request.args.get("format") or "").lower()
+    if export_format not in DOC_EXPORT_FORMATS:
+        return (
+            jsonify({"error": f"format must be one of {list(DOC_EXPORT_FORMATS)}"}),
+            400,
+        )
+
+    try:
+        data, mimetype, filename = _doc_export_service().export_document(
+            g.user.id, node_id, export_format
+        )
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeDocContentInvalidError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeDocExportFormatError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeDocExportUnavailableError as error:
+        return jsonify({"error": str(error)}), 501
+
+    response = send_file(
+        io.BytesIO(data),
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=sanitize_download_filename(filename),
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+# ---------------------------------------------------------------------------
 # S147-4 — VBWD Spreadsheets. A Sheet is an office_node of doc_type='sheet';
 # every route here is reached only through a SESSION, same bar as Docs. The
 # edit lease is reused VERBATIM — the sheet grid calls the SAME
@@ -873,7 +1050,7 @@ def doc_ai(node_id):
 # doc_type in {text, sheet}), so no lease route is duplicated here.
 # ---------------------------------------------------------------------------
 
-SHEET_EXPORT_FORMATS = ("csv", "xlsx")
+SHEET_EXPORT_FORMATS = ("csv", "xlsx", "pdf")  # "pdf" added by the drag/toolbar slice
 SHEET_IMPORT_FORMATS = ("csv", "xlsx")
 
 

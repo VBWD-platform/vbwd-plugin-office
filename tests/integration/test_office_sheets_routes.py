@@ -249,13 +249,34 @@ def test_export_csv_reflects_recalculated_values(client, owner):
 
 
 def test_export_rejects_an_unsupported_format(client, owner):
+    """A format the service does not implement is a clean 400.
+
+    NOTE: this test used to assert ``pdf`` was rejected — true only while
+    Sheets had no PDF path. It does now (rendered through the core
+    ``pdf_service`` and the ``office_sheet.html`` template), so asserting the
+    old behaviour would pin a capability we deliberately added. ``ods`` is the
+    genuinely-unsupported format today.
+    """
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+
+    response = client.post(
+        f"/api/v1/office/sheets/{node_id}/export?format=ods", headers=headers
+    )
+    assert response.status_code == 400
+
+
+def test_export_pdf_now_returns_a_real_pdf_document(client, owner):
+    """The capability the stale test above used to deny."""
     _, headers = owner
     node_id = _create_sheet(client, headers).get_json()["id"]
 
     response = client.post(
         f"/api/v1/office/sheets/{node_id}/export?format=pdf", headers=headers
     )
-    assert response.status_code == 400
+
+    assert response.status_code == 200
+    assert response.data.startswith(b"%PDF")
 
 
 # ---------------------------------------------------------------------------
@@ -412,3 +433,133 @@ def test_unrelated_users_sheet_is_a_404_not_a_403(client, db, owner):
 
     response = client.get(f"/api/v1/office/sheets/{node_id}", headers=stranger_headers)
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# S147-4 (drag/toolbar slice) — cell styles, merges, the fill handle, and the
+# PDF export format, all riding the SAME `PUT .../cells` route above (no new
+# route was added — one home per behaviour).
+# ---------------------------------------------------------------------------
+
+
+def test_a_style_change_round_trips_through_save_and_reopen(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+
+    save_response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [
+                {
+                    "sheet": "Sheet1",
+                    "address": "A1",
+                    "style": {"format": "currency", "decimals": 2, "bold": True},
+                }
+            ],
+            "base_version_no": 1,
+        },
+        headers=headers,
+    )
+    assert save_response.status_code == 200, save_response.data
+
+    reload_response = client.get(f"/api/v1/office/sheets/{node_id}", headers=headers)
+    sheet = reload_response.get_json()["workbook"]["sheets"][0]
+    assert sheet["styles"]["A1"] == {"format": "currency", "decimals": 2, "bold": True}
+
+
+def test_merge_then_unmerge_round_trips(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+
+    merge_response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [{"sheet": "Sheet1", "merge": "A1:C1"}],
+            "base_version_no": 1,
+        },
+        headers=headers,
+    )
+    assert merge_response.status_code == 200, merge_response.data
+
+    after_merge = client.get(f"/api/v1/office/sheets/{node_id}", headers=headers)
+    assert after_merge.get_json()["workbook"]["sheets"][0]["merges"] == ["A1:C1"]
+
+    unmerge_response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [{"sheet": "Sheet1", "unmerge": "B1"}],
+            "base_version_no": 2,
+        },
+        headers=headers,
+    )
+    assert unmerge_response.status_code == 200, unmerge_response.data
+
+    after_unmerge = client.get(f"/api/v1/office/sheets/{node_id}", headers=headers)
+    assert after_unmerge.get_json()["workbook"]["sheets"][0].get("merges", []) == []
+
+
+def test_fill_handle_translates_a_relative_reference_across_the_wire(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+
+    seed_response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [
+                {"sheet": "Sheet1", "address": "A1", "value": 5},
+                {"sheet": "Sheet1", "address": "A2", "value": 7},
+                {"sheet": "Sheet1", "address": "B1", "formula": "=A1*10"},
+            ],
+            "base_version_no": 1,
+        },
+        headers=headers,
+    )
+    assert seed_response.status_code == 200, seed_response.data
+
+    fill_response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [{"sheet": "Sheet1", "address": "B2", "fill_from": "B1"}],
+            "base_version_no": 2,
+        },
+        headers=headers,
+    )
+    assert fill_response.status_code == 200, fill_response.data
+    assert fill_response.get_json()["changes"]["Sheet1!B2"] == 70.0  # =A2*10
+
+
+def test_export_pdf_returns_a_pdf_attachment(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+    client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [{"sheet": "Sheet1", "address": "A1", "value": 42}],
+            "base_version_no": 1,
+        },
+        headers=headers,
+    )
+
+    response = client.post(
+        f"/api/v1/office/sheets/{node_id}/export?format=pdf", headers=headers
+    )
+    assert response.status_code == 200
+    assert response.data.startswith(b"%PDF")
+    assert response.mimetype == "application/pdf"
+
+
+def test_an_invalid_style_value_is_rejected_with_400(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+
+    response = client.put(
+        f"/api/v1/office/sheets/{node_id}/cells",
+        json={
+            "changes": [
+                {"sheet": "Sheet1", "address": "A1", "style": {"format": "scientific"}}
+            ],
+            "base_version_no": 1,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 400

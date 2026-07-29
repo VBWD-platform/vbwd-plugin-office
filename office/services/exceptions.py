@@ -169,3 +169,29 @@ class OfficeSheetUnavailableFormatError(Exception):
     never a silently lossy export/import (S147-4 requirement #7's "ship
     .csv only and report .xlsx as not done" escape hatch, enforced in code
     rather than merely in a README)."""
+
+
+# ---------------------------------------------------------------------------
+# S147-3 toolbar bundle (image assets, table-from-file import, export)
+# ---------------------------------------------------------------------------
+
+
+class OfficeDocAssetInvalidError(Exception):
+    """An uploaded Doc image asset is not one of the allow-listed image MIME
+    types — server-sniffed from the bytes, never the client's declared
+    Content-Type (mirrors B3's rule elsewhere in this plugin)."""
+
+
+class OfficeDocTableImportFormatError(Exception):
+    """``format`` (or the inferred extension) on a Doc "insert table from
+    file" import is not one of the supported import formats."""
+
+
+class OfficeDocExportFormatError(Exception):
+    """``?format=`` on a Doc export is not one of ``pdf``/``docx``/``md``."""
+
+
+class OfficeDocExportUnavailableError(Exception):
+    """A Doc export format is on the supported list but its optional
+    dependency is not installed. Maps to a clean ``501`` — never a silently
+    lossy export (same escape hatch as ``OfficeSheetUnavailableFormatError``)."""

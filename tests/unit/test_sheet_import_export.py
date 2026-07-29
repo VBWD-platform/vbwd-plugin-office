@@ -15,6 +15,7 @@ from plugins.office.office.services.sheet_content import SheetCeiling
 from plugins.office.office.services.sheet_import_export import (
     export_csv,
     export_xlsx,
+    render_sheet_html_table,
     import_csv,
     import_xlsx,
 )
@@ -111,6 +112,51 @@ def test_xlsx_round_trip_preserves_values_and_formulas():
 
     deltas = recalculate(reimported, [total_address], now=NOW)
     assert deltas[total_address] == 7.0
+
+
+# ---------------------------------------------------------------------------
+# S147-4 (drag/toolbar slice) — PDF export, the third export-dropdown format.
+# ---------------------------------------------------------------------------
+
+
+def test_html_render_shows_COMPUTED_values_not_formula_source():
+    """PDF export goes through the core pdf_service + the office_sheet.html
+    template, so the plugin's own job is the HTML body. What a reader must see
+    is the RESULT — printing '=A1+B1' onto a page would be useless."""
+    workbook = import_csv(b"3,4\n", GENEROUS_CEILING).workbook
+    address = parse_cell_reference("C1", default_sheet="Sheet1")
+    workbook.set_formula(address, "=A1+B1")
+    recalculate(workbook, [address], now=NOW)
+
+    html = render_sheet_html_table(workbook, "Sheet1")
+
+    assert "<table" in html
+    assert "7" in html
+    assert "=A1+B1" not in html
+
+
+def test_html_render_of_an_empty_sheet_is_still_valid_output():
+    from plugins.office.office.sheet.engine import Workbook
+
+    workbook = Workbook()
+    workbook.add_sheet("Sheet1")
+
+    html = render_sheet_html_table(workbook, "Sheet1")
+
+    assert isinstance(html, str) and html.strip()
+
+
+def test_html_render_surfaces_an_error_value_rather_than_hiding_it():
+    workbook = import_csv(b"1\n", GENEROUS_CEILING).workbook
+    address = parse_cell_reference("B1", default_sheet="Sheet1")
+    workbook.set_formula(address, "=1/0")
+    recalculate(workbook, [address], now=NOW)
+
+    html = render_sheet_html_table(workbook, "Sheet1")
+
+    # A printed model that quietly blanked its broken cells would be worse
+    # than one that shows the error.
+    assert "#DIV/0!" in html
 
 
 def test_an_unmapped_function_recalculates_to_name_error_not_silently_dropped():

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 20mm;
+    }
+    body {
+      font-family: "DejaVu Sans", Arial, sans-serif;
+      color: #1a202c;
+      font-size: 11pt;
+      line-height: 1.5;
+    }
+    h1.doc-title {
+      font-size: 20pt;
+      margin: 0 0 10mm;
+      border-bottom: 2px solid #1a202c;
+      padding-bottom: 4mm;
+    }
+    h1, h2, h3, h4, h5, h6 { color: #1a202c; }
+    p { margin: 0 0 3mm; }
+    blockquote {
+      margin: 0 0 3mm;
+      padding-left: 4mm;
+      border-left: 3px solid #cbd5e0;
+      color: #4a5568;
+    }
+    pre {
+      background: #f7fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 2mm;
+      padding: 3mm;
+      white-space: pre-wrap;
+      font-family: "DejaVu Sans Mono", monospace;
+      font-size: 9pt;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 0 4mm;
+    }
+    table th, table td {
+      border: 1px solid #cbd5e0;
+      padding: 2mm 3mm;
+      text-align: left;
+    }
+    table th { background: #f7fafc; font-weight: 600; }
+    img { max-width: 100%; }
+    hr { border: none; border-top: 1px solid #cbd5e0; margin: 5mm 0; }
+    code { font-family: "DejaVu Sans Mono", monospace; }
+  </style>
+</head>
+<body>
+  <h1 class="doc-title">{{ title }}</h1>
+  {{ body_html }}
+</body>
+</html>
