@@ -255,7 +255,7 @@ class OfficePlugin(BasePlugin):
                 FILESPACE_CLAIM_MARKER,
                 {"plugin": PLUGIN_NAME, "version": PLUGIN_VERSION},
             )
-        except Exception as filespace_error:  # noqa: BLE001 — never abort enable
+        except Exception as filespace_error:  # deliberately broad: never abort enable
             logger.warning("[office] Failed to claim filespace: %s", filespace_error)
 
     def _register_pdf_template_path(self, container: Any) -> None:
@@ -273,7 +273,9 @@ class OfficePlugin(BasePlugin):
                 os.path.dirname(__file__), "office", "templates", "pdf"
             )
             pdf_service.register_plugin_template_path(template_dir)
-        except Exception as pdf_template_error:  # noqa: BLE001 — never abort enable
+        except (
+            Exception
+        ) as pdf_template_error:  # deliberately broad: never abort enable
             logger.warning(
                 "[office] Failed to register PDF template path: %s", pdf_template_error
             )
@@ -393,7 +395,7 @@ def _current_plugin_config() -> Dict[str, Any]:
             stored = config_store.get_config(PLUGIN_NAME)
             if stored:
                 return {**DEFAULT_CONFIG, **stored}
-    except Exception as config_read_error:  # noqa: BLE001 — never break a route
+    except Exception as config_read_error:  # deliberately broad: never break a route
         logger.warning(
             "[office] Failed to read live plugin config: %s", config_read_error
         )

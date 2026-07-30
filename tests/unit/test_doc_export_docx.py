@@ -98,7 +98,10 @@ def test_an_image_is_embedded_via_the_asset_bytes_resolver():
         "type": "doc",
         "content": [{"type": "image", "attrs": {"src": "office-asset:asset-1"}}],
     }
-    resolver = lambda asset_id: (tiny_png, "image/png")  # noqa: E731
+
+    def resolver(asset_id):
+        return (tiny_png, "image/png")
+
     document = _open(render_docx(model, "doc", resolver))
     assert len(document.inline_shapes) == 1
 

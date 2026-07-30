@@ -480,11 +480,11 @@ def test_anonymous_edit_charges_the_owners_quota(
     _share, token = sharing_service.create_share(
         owner_id, node.id, permission=PERMISSION_EDIT, allow_anonymous=True
     )
-    before = document_service._quota_service.bytes_used(owner_id)  # noqa: SLF001
+    before = document_service._quota_service.bytes_used(owner_id)
 
     sharing_service.put_public_content(token, b"more bytes than before!!")
 
-    after = document_service._quota_service.bytes_used(owner_id)  # noqa: SLF001
+    after = document_service._quota_service.bytes_used(owner_id)
     assert after > before
 
 

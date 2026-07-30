@@ -61,7 +61,7 @@ def test_content_on_disk_is_not_the_plaintext(store):
 
     blob = store.write_new_version("owner-3", "doc-3", 1, sealed_key, payload)
 
-    raw_on_disk = store._filespace.read_bytes(blob.storage_key)  # noqa: SLF001
+    raw_on_disk = store._filespace.read_bytes(blob.storage_key)
     assert raw_on_disk != payload
 
 
@@ -86,7 +86,7 @@ def test_delete_removes_the_blob(store):
 
     store.delete(blob.storage_key)
 
-    assert store._filespace.exists(blob.storage_key) is False  # noqa: SLF001
+    assert store._filespace.exists(blob.storage_key) is False
 
 
 def test_path_traversal_in_document_id_cannot_escape_the_namespace_root(tmp_path):

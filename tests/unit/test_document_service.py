@@ -191,7 +191,7 @@ def test_usage_updates_on_upload_and_new_version(service_factory, owner_id):
 
     service.add_version(owner_id, node.id, b"1234567890")
 
-    assert service._quota_service.bytes_used(owner_id) == 15  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 15
 
 
 def test_add_version_over_quota_is_rejected_and_does_not_grow_usage(
@@ -203,7 +203,7 @@ def test_add_version_over_quota_is_rejected_and_does_not_grow_usage(
     with pytest.raises(OfficeQuotaExceededError):
         service.add_version(owner_id, node.id, b"12")  # would bring total to 7 > 6
 
-    assert service._quota_service.bytes_used(owner_id) == 5  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 5
 
 
 def test_restore_version_appends_rather_than_mutating(service_factory, owner_id):
@@ -222,11 +222,11 @@ def test_restore_version_appends_rather_than_mutating(service_factory, owner_id)
 def test_restore_version_does_not_consume_extra_quota(service_factory, owner_id):
     service = service_factory()
     node, _, _ = service.upload_document(owner_id, "a.txt", None, b"first")
-    before = service._quota_service.bytes_used(owner_id)  # noqa: SLF001
+    before = service._quota_service.bytes_used(owner_id)
 
     service.restore_version(owner_id, node.id, 1)
 
-    assert service._quota_service.bytes_used(owner_id) == before  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == before
 
 
 def test_trash_hides_from_listing_but_preserves_the_content(service_factory, owner_id):
@@ -243,11 +243,11 @@ def test_trash_hides_from_listing_but_preserves_the_content(service_factory, own
 def test_purge_frees_quota_and_removes_the_blob(service_factory, owner_id):
     service = service_factory()
     node, _, _ = service.upload_document(owner_id, "a.txt", None, b"12345")
-    assert service._quota_service.bytes_used(owner_id) == 5  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 5
 
     service.purge_node(owner_id, node.id)
 
-    assert service._quota_service.bytes_used(owner_id) == 0  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 0
     with pytest.raises(OfficeNodeNotFoundError):
         service.get_document_metadata(owner_id, node.id)
 
@@ -258,11 +258,11 @@ def test_purge_after_restore_frees_bytes_only_once_per_distinct_blob(
     service = service_factory()
     node, _, _ = service.upload_document(owner_id, "a.txt", None, b"12345")  # 5 bytes
     service.restore_version(owner_id, node.id, 1)  # reuses the same blob, +0 bytes
-    assert service._quota_service.bytes_used(owner_id) == 5  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 5
 
     service.purge_node(owner_id, node.id)
 
-    assert service._quota_service.bytes_used(owner_id) == 0  # noqa: SLF001
+    assert service._quota_service.bytes_used(owner_id) == 0
 
 
 def test_another_owners_node_id_is_not_found_never_forbidden(service_factory, owner_id):
