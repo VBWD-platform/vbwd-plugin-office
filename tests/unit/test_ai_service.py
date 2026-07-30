@@ -224,6 +224,48 @@ def test_selection_and_context_are_capped_before_reaching_the_client():
     assert "z" * 6 not in sent_prompt
 
 
+def test_sheet_write_formula_rejects_an_empty_intent():
+    service, _ = _service()
+    with pytest.raises(OfficeAiInvalidCapabilityError):
+        service.run_capability(
+            "user-1",
+            "node-1",
+            "sheet_write_formula",
+            selection_text="A1\t10",
+            intent="   ",
+        )
+
+
+def test_sheet_write_formula_allows_an_empty_selection_when_intent_is_given():
+    service, _ = _service()
+    proposed_text, slug = service.run_capability(
+        "user-1",
+        "node-1",
+        "sheet_write_formula",
+        selection_text="",
+        intent="total column A",
+    )
+    assert proposed_text
+    assert slug == "default"
+
+
+def test_intent_is_capped_before_reaching_the_client():
+    client = FakeLlmClient()
+    connection_service = FakeLlmConnectionService(client=client)
+    service, _ = _service(
+        llm_connection_service=connection_service, max_selection_chars=10
+    )
+    service.run_capability(
+        "user-1",
+        "node-1",
+        "sheet_write_formula",
+        selection_text="A1\t1",
+        intent="i" * 100,
+    )
+    sent_prompt = client.calls[0]["messages"][0]["content"]
+    assert "i" * 11 not in sent_prompt
+
+
 def test_the_client_never_sees_a_raw_prompt_field_shape():
     """The service's public contract has no ``prompt`` parameter at all —
     the route layer additionally rejects a ``prompt`` body field outright

@@ -58,7 +58,11 @@ from plugins.office.office.services.exceptions import (
     OfficeShareForbiddenError,
 )
 from plugins.office.office.models.office_share import PERMISSION_EDIT
-from plugins.office.office.sheet.cell import format_cell_reference
+from plugins.office.office.sheet.cell import (
+    CellAddress,
+    CellRange,
+    format_cell_reference,
+)
 from plugins.office.office.sheet.engine import (
     Cell,
     Sheet,
@@ -66,9 +70,10 @@ from plugins.office.office.sheet.engine import (
     recalculate,
     translate_formula_for_copy,
 )
-from plugins.office.office.sheet.values import ErrorCode, is_error
+from plugins.office.office.sheet.values import CellValue, ErrorCode, is_error
 
 from plugins.office.office.services.sheet_content import (
+    DEFAULT_SHEET_NAME,
     SheetCeiling,
     SheetPresentation,
     apply_presentation,
@@ -113,6 +118,30 @@ _PDF_TEMPLATE_DIR = os.path.join(
 EDIT_CAPABLE_ACCESS = frozenset({ACCESS_OWNER, PERMISSION_EDIT})
 
 _SHEET_DOC_TYPES = (DOC_TYPE_SHEET,)
+
+#: The Sheet AI orchestrator (S147-3.5) reads at most this many cells from a
+#: requested range — bounded BEFORE any character cap or LLM call, since a
+#: client could otherwise name a range spanning the sheet's own (much
+#: larger) row/column ceiling. ``CellRange.addresses()`` is a lazy
+#: generator, so this cap is also what keeps the read itself cheap, not
+#: just what reaches the model (cost + data minimisation).
+AI_SELECTION_MAX_CELLS = 500
+
+
+@dataclass(frozen=True)
+class SheetAiSelection:
+    """The bounded, read-only slice of a recalculated workbook the Sheet AI
+    orchestrator needs — never the whole workbook (S147-3.5)."""
+
+    node: OfficeNode
+    document: OfficeDocument
+    access: str
+    active_sheet: str
+    active_address: CellAddress
+    active_formula: Optional[str]
+    active_value: CellValue
+    range_cells: List[Tuple[CellAddress, CellValue]]
+    range_truncated: bool
 
 
 @dataclass(frozen=True)
@@ -250,7 +279,16 @@ class OfficeSheetEditorService:
         node_id,
         changes: List[Dict[str, Any]],
         base_version_no: int,
+        *,
+        ai_enabled: Optional[bool] = None,
     ) -> SheetSaveResult:
+        """``ai_enabled`` mirrors ``OfficeDocEditorService.save_document``'s
+        owner-only opt-in toggle (S147-3.5) — a Sheet is the same
+        ``office_document`` row a Doc is, so it reuses the identical flag
+        rather than a second one. ``changes`` may be empty ONLY when
+        ``ai_enabled`` is being toggled (the route enforces this); a save
+        still creates a new version either way, exactly like a Doc save
+        that only flips ``ai_enabled``."""
         node, document, access = self._resolve_sheet_document(user_id, node_id)
         self._require_edit_capable(node_id, access)
         self._edit_lease_service.assert_not_locked_by_other(node_id, user_id)
@@ -258,6 +296,10 @@ class OfficeSheetEditorService:
         current_version = current_version_no(document, self._version_repository)
         if current_version != base_version_no:
             raise OfficeDocStaleVersionError(current_version)
+
+        if ai_enabled is not None and access == ACCESS_OWNER:
+            document.ai_enabled = bool(ai_enabled)
+            self._document_repository.add(document)
 
         workbook, model = self._load_workbook(node, document)
         presentation = extract_presentation(model)
@@ -286,6 +328,62 @@ class OfficeSheetEditorService:
         return SheetSaveResult(
             version_no=version.version_no, changes=self._encode_deltas(deltas)
         )
+
+    # ------------------------------------------------------------------
+    # AI helper (S147-3.5) — a read, exactly like export_workbook below;
+    # writes a proposal to nothing, the client applies it through save_cells.
+    # ------------------------------------------------------------------
+
+    def read_selection_for_ai(
+        self,
+        user_id,
+        node_id,
+        address_text: str,
+        range_text: Optional[str] = None,
+    ) -> SheetAiSelection:
+        """Resolve access, recalculate the sheet (the SAME pass
+        ``export_workbook`` performs — server-authoritative values, never the
+        stale cache), and narrow the result to just ``address``/``range`` —
+        ceiling-checked through the SAME gate every other reference passes.
+        Bounded to :data:`AI_SELECTION_MAX_CELLS` cells regardless of what
+        ``range_text`` names (data minimisation, cost control)."""
+        node, document, access = self._resolve_sheet_document(user_id, node_id)
+        workbook, model = self._load_workbook(node, document)
+        self._recalculate_every_formula(workbook)
+        active_sheet = model.get("active_sheet") or DEFAULT_SHEET_NAME
+
+        active_address = parse_reference_within_ceiling(
+            address_text, active_sheet, self._ceiling
+        )
+        selection_range = parse_range_within_ceiling(
+            range_text or address_text, active_sheet, self._ceiling
+        )
+
+        range_cells, truncated = self._collect_range_cells(workbook, selection_range)
+        return SheetAiSelection(
+            node=node,
+            document=document,
+            access=access,
+            active_sheet=active_sheet,
+            active_address=active_address,
+            active_formula=workbook.get_formula(active_address),
+            active_value=workbook.get_cached_value(active_address),
+            range_cells=range_cells,
+            range_truncated=truncated,
+        )
+
+    @staticmethod
+    def _collect_range_cells(
+        workbook: Workbook, cell_range: CellRange
+    ) -> Tuple[List[Tuple[CellAddress, CellValue]], bool]:
+        cells: List[Tuple[CellAddress, CellValue]] = []
+        truncated = False
+        for address in cell_range.addresses():
+            if len(cells) >= AI_SELECTION_MAX_CELLS:
+                truncated = True
+                break
+            cells.append((address, workbook.get_cached_value(address)))
+        return cells, truncated
 
     # ------------------------------------------------------------------
     # Export / import

@@ -41,6 +41,7 @@ from plugins.office.office.services.ai_capabilities import (
     ALLOWED_CAPABILITY_IDS,
     ALLOWED_TARGET_LANGUAGES,
     CAPABILITIES_ALLOWING_EMPTY_SELECTION,
+    CAPABILITY_SHEET_WRITE_FORMULA,
     CAPABILITY_TRANSLATE,
     build_prompt,
 )
@@ -96,14 +97,21 @@ class OfficeAiService:
         context_before: str = "",
         context_after: str = "",
         target_language: Optional[str] = None,
+        intent: str = "",
     ) -> Tuple[str, str]:
         """Return ``(proposed_text, connection_slug)``. Raises a typed
-        exception (never a bare 500) for every rejection path."""
-        self._validate_request(capability_id, selection_text, target_language)
+        exception (never a bare 500) for every rejection path.
+
+        ``intent`` is the one free-text field a client may send (only
+        meaningful for ``sheet_write_formula``) — capped in CHARACTERS to
+        the exact same ``max_selection_chars`` bound as ``selection_text``,
+        never trusted at whatever length the client sent."""
+        self._validate_request(capability_id, selection_text, target_language, intent)
 
         selection_text = selection_text[: self._max_selection_chars]
         context_before = (context_before or "")[: self._max_context_chars]
         context_after = (context_after or "")[: self._max_context_chars]
+        intent = (intent or "")[: self._max_selection_chars]
 
         self._enforce_budget(user_id)
 
@@ -113,6 +121,7 @@ class OfficeAiService:
             context_before=context_before,
             context_after=context_after,
             target_language=target_language,
+            intent=intent,
         )
 
         client, connection_slug = self._resolve_client()
@@ -144,7 +153,11 @@ class OfficeAiService:
     # ------------------------------------------------------------------
 
     def _validate_request(
-        self, capability_id: str, selection_text: str, target_language: Optional[str]
+        self,
+        capability_id: str,
+        selection_text: str,
+        target_language: Optional[str],
+        intent: str,
     ) -> None:
         if capability_id not in ALLOWED_CAPABILITY_IDS:
             raise OfficeAiInvalidCapabilityError(
@@ -161,6 +174,13 @@ class OfficeAiService:
         ):
             raise OfficeAiInvalidCapabilityError(
                 f"Unsupported target_language: {target_language!r}"
+            )
+        if (
+            capability_id == CAPABILITY_SHEET_WRITE_FORMULA
+            and not (intent or "").strip()
+        ):
+            raise OfficeAiInvalidCapabilityError(
+                f"'{capability_id}' requires a non-empty intent"
             )
 
     def _enforce_budget(self, user_id) -> None:

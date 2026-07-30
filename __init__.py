@@ -685,6 +685,21 @@ def build_sheet_editor_service():
     )
 
 
+def build_sheet_ai_service():
+    """Composition root for :class:`SheetAiOrchestratorService` (S147-3.5) —
+    reuses ``build_sheet_editor_service`` (bounded workbook reads) and
+    ``build_ai_service`` (the ONE budget/audit/connection/validation path,
+    shared verbatim with VBWD Docs). Adds no repository of its own."""
+    from plugins.office.office.services.sheet_ai_service import (
+        SheetAiOrchestratorService,
+    )
+
+    return SheetAiOrchestratorService(
+        sheet_editor_service=build_sheet_editor_service(),
+        ai_service=build_ai_service(),
+    )
+
+
 # --------------------------------------------------------------------------
 # S147-3 toolbar bundle — image assets, "insert table from file", and
 # export (PDF/DOCX/Markdown) for VBWD Docs. Reuses the SAME node/document/

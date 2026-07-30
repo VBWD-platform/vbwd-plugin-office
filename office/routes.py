@@ -116,6 +116,12 @@ def _sheet_editor_service():
     return build_sheet_editor_service()
 
 
+def _sheet_ai_service():
+    from plugins.office import build_sheet_ai_service
+
+    return build_sheet_ai_service()
+
+
 def _doc_asset_service():
     from plugins.office import build_doc_asset_service
 
@@ -1143,18 +1149,25 @@ def save_sheet_cells(node_id):
     """Recalculates only the dirty sub-graph and returns ONLY the changed
     values (requirement #5), never the whole sheet. ``base_version_no`` is
     the never-trust-the-client guard, same rule as Docs: a stale value is
-    rejected with 409 and NOTHING is written."""
+    rejected with 409 and NOTHING is written.
+
+    ``changes`` may be an empty list ONLY when ``ai_enabled`` is present —
+    the owner-only AI-helper toggle (S147-3.5), mirroring how
+    ``PUT /docs/<node_id>`` accepts a content-less ``ai_enabled`` flip."""
     body = request.get_json(silent=True) or {}
-    changes = body.get("changes")
+    changes = body.get("changes", [])
     base_version_no = body.get("base_version_no")
-    if not isinstance(changes, list) or not changes:
+    ai_enabled = body.get("ai_enabled") if "ai_enabled" in body else None
+    if not isinstance(changes, list):
+        return jsonify({"error": "changes must be a list"}), 400
+    if not changes and ai_enabled is None:
         return jsonify({"error": "changes is required"}), 400
     if not isinstance(base_version_no, int):
         return jsonify({"error": "base_version_no is required"}), 400
 
     try:
         result = _sheet_editor_service().save_cells(
-            g.user.id, node_id, changes, base_version_no
+            g.user.id, node_id, changes, base_version_no, ai_enabled=ai_enabled
         )
     except OfficeNodeNotFoundError:
         return jsonify({"error": "Not found"}), 404
@@ -1306,6 +1319,58 @@ def import_sheet(node_id):
 
     db.session.commit()
     return jsonify(result.to_dict()), 200
+
+
+@office_bp.route(f"{PLAY}/sheets/<node_id>/ai", methods=["POST"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def sheet_ai(node_id):
+    """The Sheet AI helper (S147-3.5). ``capability`` is the ONLY
+    instruction the client may send — a ``prompt`` field is rejected
+    outright, before the service layer is even reached, same contract as
+    ``doc_ai`` above (one home for that rule, DRY)."""
+    body = request.get_json(silent=True) or {}
+    if "prompt" in body:
+        return (
+            jsonify({"error": "Raw prompts are not accepted; use 'capability'"}),
+            400,
+        )
+    capability = body.get("capability")
+    if not isinstance(capability, str) or not capability:
+        return jsonify({"error": "capability is required"}), 400
+    address = body.get("address")
+    if not isinstance(address, str) or not address:
+        return jsonify({"error": "address is required"}), 400
+
+    try:
+        result = _sheet_ai_service().run_capability(
+            g.user.id,
+            node_id,
+            capability,
+            address=address,
+            range_text=body.get("range"),
+            intent=body.get("intent", ""),
+        )
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeShareForbiddenError:
+        return jsonify({"error": "Forbidden"}), 403
+    except OfficeAiDisabledError:
+        return jsonify({"error": "AI helper is disabled for this document"}), 403
+    except OfficeAiInvalidCapabilityError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeSheetContentInvalidError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeSheetCeilingExceededError as error:
+        return jsonify({"error": str(error)}), 413
+    except OfficeAiBudgetExceededError as error:
+        return jsonify({"error": str(error)}), 429
+    except OfficeAiProviderError as error:
+        current_app.logger.error("[office] sheet AI request failed: %s", error)
+        return jsonify({"error": "AI request failed"}), 502
+
+    db.session.commit()
+    return jsonify(result), 200
 
 
 # ---------------------------------------------------------------------------

@@ -33,12 +33,13 @@ class _Node:
 
 
 class _Document:
-    def __init__(self, doc_type="sheet", current_version_id=None):
+    def __init__(self, doc_type="sheet", current_version_id=None, ai_enabled=False):
         self.doc_type = doc_type
         self.current_version_id = current_version_id
+        self.ai_enabled = ai_enabled
 
     def to_dict(self):
-        return {"doc_type": self.doc_type}
+        return {"doc_type": self.doc_type, "ai_enabled": self.ai_enabled}
 
 
 class _Version:
@@ -614,3 +615,110 @@ def test_export_workbook_recalculates_before_exporting():
     assert data.decode("utf-8").strip() == "4"
     assert mimetype == "text/csv"
     assert filename == "Budget.csv"
+
+
+# ---------------------------------------------------------------------------
+# S147-3.5 — the AI-helper toggle riding save_cells (empty changes allowed
+# only when ai_enabled is provided) and read_selection_for_ai.
+# ---------------------------------------------------------------------------
+
+
+def test_save_cells_toggles_ai_enabled_for_the_owner_with_empty_changes():
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=None, ai_enabled=False)
+    service, node_id, document_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document
+    )
+
+    result = service.save_cells(
+        owner_id, node_id, [], base_version_no=0, ai_enabled=True
+    )
+
+    assert document.ai_enabled is True
+    assert result.version_no == 2
+    assert len(document_service.saved_versions) == 1
+
+
+def test_save_cells_ai_enabled_is_ignored_for_a_non_owner():
+    owner_id, editor_id = uuid.uuid4(), uuid.uuid4()
+    document = _Document(current_version_id=None, ai_enabled=False)
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER, editor_id: "edit"}, document
+    )
+
+    service.save_cells(
+        editor_id,
+        node_id,
+        [{"sheet": "Sheet1", "address": "A1", "value": 1}],
+        base_version_no=0,
+        ai_enabled=True,
+    )
+
+    assert document.ai_enabled is False
+
+
+def test_read_selection_for_ai_returns_the_active_cell_and_bounded_range():
+    owner_id = uuid.uuid4()
+    model = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "cells": {
+                    "A1": {"v": 10.0},
+                    "A2": {"v": 20.0},
+                    "B1": {"f": "=A1+A2", "v": 30.0},
+                },
+            }
+        ],
+        "active_sheet": "Sheet1",
+    }
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, model=model
+    )
+
+    selection = service.read_selection_for_ai(owner_id, node_id, "B1", "A1:A2")
+
+    assert selection.access == ACCESS_OWNER
+    assert selection.active_formula == "=A1+A2"
+    assert selection.active_value == 30.0
+    addresses = {
+        (address.column, address.row): value for address, value in selection.range_cells
+    }
+    assert addresses[(1, 1)] == 10.0
+    assert addresses[(1, 2)] == 20.0
+    assert selection.range_truncated is False
+
+
+def test_read_selection_for_ai_truncates_a_selection_beyond_the_cell_cap():
+    from plugins.office.office.services import sheet_editor_service as module
+
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=uuid.uuid4())
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, max_rows=1000, max_columns=1000
+    )
+    original_cap = module.AI_SELECTION_MAX_CELLS
+    module.AI_SELECTION_MAX_CELLS = 3
+    try:
+        selection = service.read_selection_for_ai(owner_id, node_id, "A1", "A1:A10")
+    finally:
+        module.AI_SELECTION_MAX_CELLS = original_cap
+
+    assert len(selection.range_cells) == 3
+    assert selection.range_truncated is True
+
+
+def test_read_selection_for_ai_rejects_a_reference_beyond_the_ceiling():
+    from plugins.office.office.services.exceptions import (
+        OfficeSheetCeilingExceededError,
+    )
+
+    owner_id = uuid.uuid4()
+    document = _Document(current_version_id=None)
+    service, node_id, _doc_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document, max_rows=10, max_columns=5
+    )
+
+    with pytest.raises(OfficeSheetCeilingExceededError):
+        service.read_selection_for_ai(owner_id, node_id, "A11")
