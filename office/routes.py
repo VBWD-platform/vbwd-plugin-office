@@ -370,6 +370,37 @@ def update_node(node_id):
     return jsonify(node.to_dict()), 200
 
 
+@office_bp.route(f"{PLAY}/nodes/<node_id>/copy", methods=["POST"])
+@require_auth
+@require_user_permission(USE_PERMISSION)
+def copy_node(node_id):
+    """Duplicate a node into ``parent_id`` (the vault root when omitted).
+    Finder vocabulary: a document copy is a new node/document/version-1
+    through ``OfficeDocumentService`` (quota charged); a folder copy is
+    recursive. A folder copy that would not fit its destination's quota
+    writes nothing (413) — see ``copy_node``'s docstring."""
+    body = request.get_json(silent=True) or {}
+
+    try:
+        node = _document_service().copy_node(g.user.id, node_id, body.get("parent_id"))
+    except OfficeNodeNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except OfficeInvalidNodeError as error:
+        return jsonify({"error": str(error)}), 400
+    except OfficeUploadTooLargeError as error:
+        return jsonify({"error": str(error)}), 413
+    except OfficeQuotaExceededError as error:
+        return jsonify({"error": str(error)}), 413
+    except OfficeContentIntegrityError:
+        current_app.logger.error(
+            "[office] copy content integrity check failed for node %s", node_id
+        )
+        return jsonify({"error": "Content integrity check failed"}), 500
+
+    db.session.commit()
+    return jsonify(node.to_dict()), 201
+
+
 @office_bp.route(f"{PLAY}/nodes/<node_id>", methods=["DELETE"])
 @require_auth
 @require_user_permission(USE_PERMISSION)

@@ -44,6 +44,10 @@ PARENT_ID_UNSET = object()
 #: ``actor_user_id=None`` (S147-2 C4 — a purely anonymous share edit).
 ACTOR_USER_ID_UNSET = object()
 
+#: Finder-vocabulary suffix a duplicate's name gets on a collision
+#: ("report.txt" -> "report copy.txt" -> "report copy 2.txt").
+COPY_NAME_SUFFIX = "copy"
+
 
 @dataclass(frozen=True)
 class NodeSummary:
@@ -347,6 +351,114 @@ class OfficeDocumentService:
                 self._node_access.guard_against_cycle(node, new_parent)
             node.parent_id = new_parent.id if new_parent else None
         return self._node_repository.add(node)
+
+    def copy_node(self, owner_user_id, node_id, parent_id=None) -> OfficeNode:
+        """Duplicate ``node_id`` into ``parent_id`` (the vault root when
+        falsy). A folder copy is recursive; a document copy re-writes its
+        current version's bytes through :meth:`upload_document` so quota is
+        charged and MIME/size bookkeeping happens exactly once (DRY — no
+        hand-written rows). Name collisions in the destination get a Finder-
+        style " copy" / " copy 2" suffix.
+
+        For a folder, the WHOLE subtree's byte total is quota-checked up
+        front, before anything is written — a copy that would not fit is
+        refused as a whole (413) rather than left half-written."""
+        source = self._node_access.require_owned_node(owner_user_id, node_id)
+        destination_parent = self._node_access.resolve_parent_folder(
+            owner_user_id, parent_id
+        )
+        if source.kind == NODE_KIND_FOLDER and destination_parent is not None:
+            self._node_access.guard_against_cycle(source, destination_parent)
+
+        destination_parent_id = destination_parent.id if destination_parent else None
+        if source.kind == NODE_KIND_FOLDER:
+            subtree_bytes = self._subtree_size_bytes(owner_user_id, source)
+            self._quota_service.ensure_capacity(owner_user_id, subtree_bytes)
+
+        copy_name = self._unique_copy_name(
+            owner_user_id, destination_parent_id, source.name
+        )
+        return self._copy_node_recursive(
+            owner_user_id, source, destination_parent_id, copy_name
+        )
+
+    def _copy_node_recursive(
+        self, owner_user_id, source_node: OfficeNode, destination_parent_id, name: str
+    ) -> OfficeNode:
+        if source_node.kind == NODE_KIND_FOLDER:
+            return self._copy_folder(
+                owner_user_id, source_node, destination_parent_id, name
+            )
+        return self._copy_document(
+            owner_user_id, source_node, destination_parent_id, name
+        )
+
+    def _copy_folder(
+        self, owner_user_id, source_node: OfficeNode, destination_parent_id, name: str
+    ) -> OfficeNode:
+        new_folder = self._node_repository.add(
+            OfficeNode(
+                owner_user_id=owner_user_id,
+                parent_id=destination_parent_id,
+                kind=NODE_KIND_FOLDER,
+                name=name,
+            )
+        )
+        for child in self._node_repository.find_children(owner_user_id, source_node.id):
+            self._copy_node_recursive(owner_user_id, child, new_folder.id, child.name)
+        return new_folder
+
+    def _copy_document(
+        self, owner_user_id, source_node: OfficeNode, destination_parent_id, name: str
+    ) -> OfficeNode:
+        source_document = self._document_repository.find_by_node_id(source_node.id)
+        if source_document is None:
+            raise OfficeNodeNotFoundError(source_node.id)
+        _, _, _, content = self.get_content_for_node(source_node, source_document)
+        new_node, _new_document, _new_version = self.upload_document(
+            owner_user_id,
+            name,
+            destination_parent_id,
+            content,
+            doc_type=source_document.doc_type,
+        )
+        return new_node
+
+    def _subtree_size_bytes(self, owner_user_id, folder_node: OfficeNode) -> int:
+        total_bytes = 0
+        for child in self._node_repository.find_children(owner_user_id, folder_node.id):
+            if child.kind == NODE_KIND_FOLDER:
+                total_bytes += self._subtree_size_bytes(owner_user_id, child)
+                continue
+            child_document = self._document_repository.find_by_node_id(child.id)
+            if child_document is not None:
+                total_bytes += child_document.size_bytes
+        return total_bytes
+
+    def _unique_copy_name(self, owner_user_id, parent_id, original_name: str) -> str:
+        """The original name unchanged, UNLESS the destination already has a
+        sibling with that exact name (a same-folder duplicate always does) —
+        only then does Finder-style " copy" / " copy 2" suffixing kick in."""
+        sibling_names = {
+            sibling.name
+            for sibling in self._node_repository.find_children(owner_user_id, parent_id)
+        }
+        if original_name not in sibling_names:
+            return original_name
+        stem, extension = self._split_stem_and_extension(original_name)
+        candidate = f"{stem} {COPY_NAME_SUFFIX}{extension}"
+        attempt = 2
+        while candidate in sibling_names:
+            candidate = f"{stem} {COPY_NAME_SUFFIX} {attempt}{extension}"
+            attempt += 1
+        return sanitize_display_name(candidate)
+
+    @staticmethod
+    def _split_stem_and_extension(name: str):
+        stem, separator, extension = name.rpartition(".")
+        if not separator or not stem:
+            return name, ""
+        return stem, f".{extension}"
 
     def trash_node(self, owner_user_id, node_id) -> OfficeNode:
         node = self._node_access.require_owned_node(owner_user_id, node_id)

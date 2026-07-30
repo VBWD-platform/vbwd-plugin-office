@@ -291,3 +291,140 @@ def test_rename_only_touches_the_name(service_factory, owner_id):
 
     assert folder.name == "new-name"
     assert folder.parent_id is None
+
+
+def test_rename_with_path_traversal_name_does_not_change_storage_key(
+    service_factory, owner_id
+):
+    """The security ask: renaming can never relocate a document's bytes.
+    Storage keys are server-minted (owner/document/version); a hostile
+    display name is sanitised but the blob stays exactly where it was."""
+    service = service_factory()
+    node, _document, version = service.upload_document(
+        owner_id, "report.txt", None, b"unchanged bytes"
+    )
+    original_storage_key = version.storage_key
+
+    service.rename_or_move(owner_id, node.id, name="../../etc/passwd")
+
+    assert "/" not in node.name
+    assert "\\" not in node.name
+    _, _, current_version, content = service.get_content(owner_id, node.id)
+    assert current_version.storage_key == original_storage_key
+    assert content == b"unchanged bytes"
+
+
+# ---------------------------------------------------------------------------
+# Copy (Finder-style file management)
+# ---------------------------------------------------------------------------
+
+
+def test_copy_document_creates_a_new_node_document_and_version(
+    service_factory, owner_id
+):
+    service = service_factory()
+    source_node, source_document, _ = service.upload_document(
+        owner_id, "report.txt", None, b"original content"
+    )
+
+    copy_node = service.copy_node(owner_id, source_node.id)
+
+    assert copy_node.id != source_node.id
+    assert copy_node.name == "report copy.txt"
+    _, copy_document = service._require_document(owner_id, copy_node.id)
+    assert copy_document.id != source_document.id
+    _, _, _, content = service.get_content(owner_id, copy_node.id)
+    assert content == b"original content"
+
+
+def test_copy_document_charges_quota_for_the_new_copy(service_factory, owner_id):
+    service = service_factory()
+    source_node, _, _ = service.upload_document(owner_id, "a.txt", None, b"12345")
+    used_before_copy = service._quota_service.bytes_used(owner_id)
+
+    service.copy_node(owner_id, source_node.id)
+
+    assert service._quota_service.bytes_used(owner_id) == used_before_copy + 5
+
+
+def test_copy_document_name_collision_gets_a_copy_suffix(service_factory, owner_id):
+    service = service_factory()
+    source_node, _, _ = service.upload_document(owner_id, "report.txt", None, b"a")
+
+    first_copy = service.copy_node(owner_id, source_node.id)
+    second_copy = service.copy_node(owner_id, source_node.id)
+
+    assert first_copy.name == "report copy.txt"
+    assert second_copy.name == "report copy 2.txt"
+
+
+def test_copy_folder_without_extension_gets_a_copy_suffix(service_factory, owner_id):
+    service = service_factory()
+    folder = service.create_folder(owner_id, "Photos")
+
+    copy_folder = service.copy_node(owner_id, folder.id)
+
+    assert copy_folder.name == "Photos copy"
+
+
+def test_copy_folder_is_recursive(service_factory, owner_id):
+    service = service_factory()
+    folder = service.create_folder(owner_id, "parent")
+    child_folder = service.create_folder(owner_id, "child", folder.id)
+    service.upload_document(owner_id, "a.txt", folder.id, b"top-level")
+    service.upload_document(owner_id, "b.txt", child_folder.id, b"nested")
+
+    copy_folder = service.copy_node(owner_id, folder.id)
+
+    top_level_copy = service.list_children(owner_id, copy_folder.id)
+    assert {summary.node.name for summary in top_level_copy} == {"a.txt", "child"}
+    nested_folder = next(
+        summary.node for summary in top_level_copy if summary.node.name == "child"
+    )
+    nested_children = service.list_children(owner_id, nested_folder.id)
+    assert [summary.node.name for summary in nested_children] == ["b.txt"]
+    _, _, _, nested_content = service.get_content(owner_id, nested_children[0].node.id)
+    assert nested_content == b"nested"
+
+
+def test_copy_folder_into_its_own_descendant_is_rejected(service_factory, owner_id):
+    service = service_factory()
+    parent = service.create_folder(owner_id, "parent")
+    child = service.create_folder(owner_id, "child", parent.id)
+
+    with pytest.raises(OfficeInvalidNodeError):
+        service.copy_node(owner_id, parent.id, parent_id=child.id)
+
+
+def test_copy_folder_into_itself_is_rejected(service_factory, owner_id):
+    service = service_factory()
+    folder = service.create_folder(owner_id, "folder")
+
+    with pytest.raises(OfficeInvalidNodeError):
+        service.copy_node(owner_id, folder.id, parent_id=folder.id)
+
+
+def test_copy_another_owners_node_id_is_not_found(service_factory, owner_id):
+    service = service_factory()
+    node, _, _ = service.upload_document(owner_id, "secret.txt", None, b"top secret")
+    someone_else = uuid.uuid4()
+
+    with pytest.raises(OfficeNodeNotFoundError):
+        service.copy_node(someone_else, node.id)
+
+
+def test_copy_folder_subtree_exceeding_quota_writes_nothing(service_factory, owner_id):
+    """A folder copy is refused as a whole when the subtree would not fit —
+    never a partially-written copy."""
+    service = service_factory(free_quota_bytes=12)
+    folder = service.create_folder(owner_id, "parent")
+    service.upload_document(owner_id, "a.txt", folder.id, b"12345")  # 5 bytes
+    service.upload_document(owner_id, "b.txt", folder.id, b"1234567")  # 7 bytes
+    used_before_copy = service._quota_service.bytes_used(owner_id)  # 12, at the cap
+
+    with pytest.raises(OfficeQuotaExceededError):
+        service.copy_node(owner_id, folder.id)
+
+    assert service._quota_service.bytes_used(owner_id) == used_before_copy
+    siblings = service.list_children(owner_id, None)
+    assert [summary.node.name for summary in siblings] == ["parent"]
