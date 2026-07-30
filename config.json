@@ -16,5 +16,6 @@
   "ai_connection_slug": "",
   "ai_monthly_call_budget": 100,
   "ai_max_selection_chars": 8000,
-  "ai_max_context_chars": 2000
+  "ai_max_context_chars": 2000,
+  "ai_max_prompt_chars": 2000
 }

@@ -9,12 +9,23 @@ that keeps VBWD Docs/Spreadsheets from becoming an open proxy to the
 operator's paid LLM connection: the client chooses WHAT KIND of help it
 wants, never WHAT THE MODEL IS TOLD TO DO.
 
-The four ``sheet_*`` capabilities below are the ONLY free-text exception,
-and only for ``sheet_write_formula``: expressing "total column B" needs a
-short natural-language intent. It is still selected by capability id, still
-budget-gated, and still length-capped exactly like ``selection_text``
-(enforced in ``OfficeAiService.run_capability``) — it is never treated as an
-instruction to the model beyond "the user's stated intent for this formula".
+``sheet_write_formula`` is a free-text exception within its OWN capability:
+expressing "total column B" needs a short natural-language intent. It is
+still selected by capability id, still budget-gated, and still
+length-capped exactly like ``selection_text`` (enforced in
+``OfficeAiService.run_capability``) — it is never treated as an instruction
+to the model beyond "the user's stated intent for this formula".
+
+``freeform`` (Docs) and ``sheet_freeform`` (Sheets) go one step further and
+ARE meant to carry an open-ended user instruction — the one deliberate
+exception to "the client never sends a raw prompt" (see the two routes'
+docstrings). Every one of the surrounding controls still applies exactly as
+for a preset capability: capability-id allow-list, per-user monthly budget,
+``ai_enabled``, the audit trail, and the LLM Connection Manager. The one new
+control is a cap on the prompt ITSELF, in its own config value
+(``ai_max_prompt_chars``) — never silently reusing ``ai_max_selection_chars``,
+which bounds a different thing (the document/sheet excerpt, not the user's
+instruction).
 """
 from __future__ import annotations
 
@@ -32,14 +43,24 @@ CAPABILITY_FIX_GRAMMAR = "fix_grammar"
 CAPABILITY_TRANSLATE = "translate"
 CAPABILITY_OUTLINE = "outline"
 
-#: VBWD Spreadsheets capabilities (S147-3.5). ``sheet_write_formula`` and
-#: ``sheet_fix_error`` propose a FORMULA (never auto-applied — the client
-#: accepts it through the existing, engine-validated ``save_cells`` path);
-#: ``sheet_explain_formula``/``sheet_summarize_range`` return prose.
+#: The Docs free-text capability — the user's own prompt is the instruction,
+#: acting on ``selection_text``/``context_before``/``context_after`` as
+#: context exactly like every preset capability above.
+CAPABILITY_FREEFORM = "freeform"
+
+#: VBWD Spreadsheets capabilities (S147-3.5, extended S147 free-text).
+#: ``sheet_write_formula`` and ``sheet_fix_error`` propose a FORMULA (never
+#: auto-applied — the client accepts it through the existing,
+#: engine-validated ``save_cells`` path); ``sheet_explain_formula``/
+#: ``sheet_summarize_range`` return prose. ``sheet_freeform`` is the
+#: free-text capability: its reply's SHAPE (formula vs. prose) is decided
+#: dynamically from what the model actually returns, never statically from
+#: the capability id (see ``sheet_ai_service.py``).
 CAPABILITY_SHEET_WRITE_FORMULA = "sheet_write_formula"
 CAPABILITY_SHEET_EXPLAIN_FORMULA = "sheet_explain_formula"
 CAPABILITY_SHEET_SUMMARIZE_RANGE = "sheet_summarize_range"
 CAPABILITY_SHEET_FIX_ERROR = "sheet_fix_error"
+CAPABILITY_SHEET_FREEFORM = "sheet_freeform"
 
 SHEET_CAPABILITY_IDS = frozenset(
     {
@@ -47,8 +68,13 @@ SHEET_CAPABILITY_IDS = frozenset(
         CAPABILITY_SHEET_EXPLAIN_FORMULA,
         CAPABILITY_SHEET_SUMMARIZE_RANGE,
         CAPABILITY_SHEET_FIX_ERROR,
+        CAPABILITY_SHEET_FREEFORM,
     }
 )
+
+#: The two free-text capabilities across both surfaces — the only ones that
+#: accept (and require) a user-supplied ``prompt`` (S147 free-text helper).
+FREEFORM_CAPABILITY_IDS = frozenset({CAPABILITY_FREEFORM, CAPABILITY_SHEET_FREEFORM})
 
 #: The sheet capabilities whose model reply is a FORMULA (vs. prose) — the
 #: orchestrator (``sheet_ai_service.py``) uses this to shape the returned
@@ -69,6 +95,7 @@ ALLOWED_CAPABILITY_IDS = frozenset(
         CAPABILITY_FIX_GRAMMAR,
         CAPABILITY_TRANSLATE,
         CAPABILITY_OUTLINE,
+        CAPABILITY_FREEFORM,
     }
     | SHEET_CAPABILITY_IDS
 )
@@ -79,9 +106,17 @@ ALLOWED_CAPABILITY_IDS = frozenset(
 #: ``sheet_write_formula`` joins them for the analogous reason: the active
 #: cell may be brand new, with no populated nearby cells yet — the user's
 #: ``intent`` (separately required, see ``OfficeAiService._validate_request``)
-#: carries the instruction instead.
+#: carries the instruction instead. ``freeform``/``sheet_freeform`` join for
+#: the same reason again: the user's ``prompt`` (also separately required)
+#: carries the instruction, so no selection is strictly needed either.
 CAPABILITIES_ALLOWING_EMPTY_SELECTION = frozenset(
-    {CAPABILITY_CONTINUE_WRITING, CAPABILITY_OUTLINE, CAPABILITY_SHEET_WRITE_FORMULA}
+    {
+        CAPABILITY_CONTINUE_WRITING,
+        CAPABILITY_OUTLINE,
+        CAPABILITY_SHEET_WRITE_FORMULA,
+        CAPABILITY_FREEFORM,
+        CAPABILITY_SHEET_FREEFORM,
+    }
 )
 
 #: A small, explicit allow-list — ``translate`` needs a target, but it must
@@ -102,6 +137,18 @@ _SYSTEM_PROMPT = (
     "text according to the instruction ONLY. Reply with ONLY the resulting "
     "plain text — no preamble, no explanation, no markdown code fences, no "
     "quotation marks around the result."
+)
+
+#: The Docs freeform system prompt carries no FIXED instruction of its own
+#: (unlike ``_SYSTEM_PROMPT`` + ``_INSTRUCTIONS`` above) — the user's own
+#: ``prompt`` is spliced into the user message as the instruction instead.
+_FREEFORM_SYSTEM_PROMPT = (
+    "You are a writing assistant embedded in a rich-text document editor. "
+    "The user gives you a free-text instruction, plus a piece of text (and "
+    "its surrounding context) to apply it to. Carry out the instruction on "
+    "the text. Reply with ONLY the resulting plain text — no preamble, no "
+    "explanation, no markdown code fences, no quotation marks around the "
+    "result."
 )
 
 _INSTRUCTIONS = {
@@ -137,12 +184,20 @@ def build_prompt(
     context_after: str,
     target_language: Optional[str] = None,
     intent: str = "",
+    prompt: str = "",
 ) -> Tuple[str, str]:
     """Return ``(system_prompt, user_prompt)`` for ``capability_id``. Callers
     must have already validated ``capability_id`` is on the allow-list."""
     if capability_id in SHEET_CAPABILITY_IDS:
         return _build_sheet_prompt(
-            capability_id, selection_text=selection_text, intent=intent
+            capability_id, selection_text=selection_text, intent=intent, prompt=prompt
+        )
+    if capability_id == CAPABILITY_FREEFORM:
+        return _build_freeform_doc_prompt(
+            selection_text=selection_text,
+            context_before=context_before,
+            context_after=context_after,
+            prompt=prompt,
         )
     instruction = _instruction_for(capability_id, target_language)
     user_prompt = (
@@ -155,6 +210,21 @@ def build_prompt(
         f"{context_after}\n"
     )
     return _SYSTEM_PROMPT, user_prompt
+
+
+def _build_freeform_doc_prompt(
+    *, selection_text: str, context_before: str, context_after: str, prompt: str
+) -> Tuple[str, str]:
+    user_prompt = (
+        f"Instruction: {prompt}\n\n"
+        f"--- Text before the selection (context only, do not repeat it) ---\n"
+        f"{context_before}\n\n"
+        f"--- Selected text (act on this; may be empty) ---\n"
+        f"{selection_text}\n\n"
+        f"--- Text after the selection (context only, do not repeat it) ---\n"
+        f"{context_after}\n"
+    )
+    return _FREEFORM_SYSTEM_PROMPT, user_prompt
 
 
 def _instruction_for(capability_id: str, target_language: Optional[str]) -> str:
@@ -211,6 +281,17 @@ _SHEET_TEXT_REPLY_RULE = (
     "no preamble, no quotation marks."
 )
 
+#: Freeform's reply rule differs from every preset sheet capability above:
+#: it may need EITHER shape, decided by what the user actually asked for
+#: (``sheet_ai_service.py`` sniffs the reply for a leading ``=`` to tell
+#: them apart — never a second capability id per shape).
+_SHEET_FREEFORM_REPLY_RULE = (
+    "If the user's instruction calls for a spreadsheet formula, reply with "
+    "ONLY that formula for the active cell, starting with '='. Otherwise, "
+    "reply with ONLY a concise plain-text answer. In either case: no "
+    "explanation beyond that, no markdown code fences, no quotation marks."
+)
+
 #: One extra-instruction fragment per sheet capability — kept as plain
 #: strings (not pre-built system prompts) so the function list is spliced in
 #: freshly by :func:`_sheet_system_prompt` on every call, never baked in at
@@ -235,16 +316,25 @@ _SHEET_EXTRA_INSTRUCTIONS = {
         "Describe what the selected data shows: totals, notable trends, and "
         "outliers, in three to six sentences. " + _SHEET_TEXT_REPLY_RULE
     ),
+    CAPABILITY_SHEET_FREEFORM: (
+        "The user has given a free-text instruction about the active cell "
+        "and the surrounding data. " + _SHEET_FREEFORM_REPLY_RULE
+    ),
 }
 
 
 def _build_sheet_prompt(
-    capability_id: str, *, selection_text: str, intent: str
+    capability_id: str, *, selection_text: str, intent: str, prompt: str = ""
 ) -> Tuple[str, str]:
     system_prompt = _sheet_system_prompt(_SHEET_EXTRA_INSTRUCTIONS[capability_id])
     if capability_id == CAPABILITY_SHEET_WRITE_FORMULA:
         user_prompt = (
             f"Intent: {intent}\n\n"
+            f"--- Active cell and nearby cells ---\n{selection_text}\n"
+        )
+    elif capability_id == CAPABILITY_SHEET_FREEFORM:
+        user_prompt = (
+            f"User instruction: {prompt}\n\n"
             f"--- Active cell and nearby cells ---\n{selection_text}\n"
         )
     else:

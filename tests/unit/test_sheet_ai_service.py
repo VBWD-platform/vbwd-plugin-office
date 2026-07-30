@@ -159,6 +159,77 @@ def test_fix_error_also_requires_edit_and_returns_a_formula_proposal():
         orchestrator.run_capability("user-1", "node-1", "sheet_fix_error", address="B1")
 
 
+def test_freeform_view_access_may_ask_and_get_a_text_reply():
+    orchestrator, _sheet, ai_service = _orchestrator(
+        _selection(access="view"),
+        ai_service=FakeAiService(reply="Column B holds unit prices."),
+    )
+    proposal = orchestrator.run_capability(
+        "user-1",
+        "node-1",
+        "sheet_freeform",
+        address="B1",
+        prompt="what does column B represent?",
+    )
+    assert proposal["kind"] == "text"
+    assert proposal["text"] == "Column B holds unit prices."
+    assert len(ai_service.calls) == 1
+    assert ai_service.calls[0][3]["prompt"] == "what does column B represent?"
+
+
+def test_freeform_view_access_asking_for_a_formula_is_rejected_after_the_call():
+    """Freeform's shape is unknown ahead of time — the access check for
+    "does this need edit?" can only run once the reply's shape (formula vs
+    text) is known, unlike the statically-classified preset capabilities.
+    The call still reaches the provider (and is still budgeted/audited by
+    ``OfficeAiService`` — this orchestrator adds no second gate there); only
+    the FORBIDDEN proposal is withheld from the caller."""
+    orchestrator, _sheet, ai_service = _orchestrator(
+        _selection(access="view"), ai_service=FakeAiService(reply="=B1*2")
+    )
+    with pytest.raises(OfficeShareForbiddenError):
+        orchestrator.run_capability(
+            "user-1",
+            "node-1",
+            "sheet_freeform",
+            address="B1",
+            prompt="add a column that is column B times 2",
+        )
+    assert len(ai_service.calls) == 1
+
+
+def test_freeform_edit_access_gets_a_formula_proposal_when_the_reply_is_a_formula():
+    orchestrator, _sheet, ai_service = _orchestrator(
+        _selection(access="edit"), ai_service=FakeAiService(reply="=B1*2")
+    )
+    proposal = orchestrator.run_capability(
+        "user-1",
+        "node-1",
+        "sheet_freeform",
+        address="B1",
+        prompt="add a column that is column B times 2",
+    )
+    assert proposal == {
+        "kind": "formula",
+        "capability": "sheet_freeform",
+        "connection_slug": "default",
+        "address": "B1",
+        "formula": "=B1*2",
+    }
+
+
+def test_freeform_edit_access_gets_a_text_proposal_when_the_reply_is_prose():
+    orchestrator, _sheet, ai_service = _orchestrator(
+        _selection(access="edit"),
+        ai_service=FakeAiService(reply="It sums the visible range."),
+    )
+    proposal = orchestrator.run_capability(
+        "user-1", "node-1", "sheet_freeform", address="B1", prompt="explain this"
+    )
+    assert proposal["kind"] == "text"
+    assert proposal["text"] == "It sums the visible range."
+
+
 def test_summarize_range_returns_a_text_proposal_and_serializes_the_range():
     orchestrator, sheet_editor_service, ai_service = _orchestrator(
         _selection(), ai_service=FakeAiService(reply="A1:A2 sum to 30.")

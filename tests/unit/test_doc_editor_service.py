@@ -263,6 +263,23 @@ def test_ai_capability_runs_when_ai_enabled_on_the_document():
     assert len(ai_service.calls) == 1
 
 
+def test_ai_capability_forwards_a_prompt_to_the_ai_service():
+    owner_id = uuid.uuid4()
+    document = _Document(ai_enabled=True)
+    service, node_id, _document_service, ai_service = _build_service(
+        {owner_id: ACCESS_OWNER}, document
+    )
+
+    service.run_ai_capability(
+        owner_id,
+        node_id,
+        "freeform",
+        selection_text="",
+        prompt="rewrite this as three bullet points",
+    )
+    assert ai_service.calls[0][3]["prompt"] == "rewrite this as three bullet points"
+
+
 def test_only_the_owner_may_flip_ai_enabled_via_save():
     owner_id, editor_id = uuid.uuid4(), uuid.uuid4()
     document = _Document(current_version_id=None, ai_enabled=False)

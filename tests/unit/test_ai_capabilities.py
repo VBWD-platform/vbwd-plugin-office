@@ -6,25 +6,49 @@ from plugins.office.office.sheet.functions import FUNCTION_REGISTRY
 from plugins.office.office.services.ai_capabilities import (
     ALLOWED_CAPABILITY_IDS,
     CAPABILITIES_ALLOWING_EMPTY_SELECTION,
+    CAPABILITY_FREEFORM,
     CAPABILITY_SHEET_EXPLAIN_FORMULA,
     CAPABILITY_SHEET_FIX_ERROR,
+    CAPABILITY_SHEET_FREEFORM,
     CAPABILITY_SHEET_SUMMARIZE_RANGE,
     CAPABILITY_SHEET_WRITE_FORMULA,
     FORMULA_PRODUCING_SHEET_CAPABILITIES,
+    FREEFORM_CAPABILITY_IDS,
     SHEET_CAPABILITY_IDS,
     allowed_sheet_function_names,
     build_prompt,
 )
 
 
-def test_all_four_sheet_capabilities_are_on_the_allow_list():
+def test_all_five_sheet_capabilities_are_on_the_allow_list():
     assert SHEET_CAPABILITY_IDS <= ALLOWED_CAPABILITY_IDS
     assert SHEET_CAPABILITY_IDS == {
         CAPABILITY_SHEET_WRITE_FORMULA,
         CAPABILITY_SHEET_EXPLAIN_FORMULA,
         CAPABILITY_SHEET_SUMMARIZE_RANGE,
         CAPABILITY_SHEET_FIX_ERROR,
+        CAPABILITY_SHEET_FREEFORM,
     }
+
+
+def test_freeform_capability_ids_are_exactly_the_two_free_text_capabilities():
+    assert CAPABILITY_FREEFORM == "freeform"
+    assert CAPABILITY_SHEET_FREEFORM == "sheet_freeform"
+    assert FREEFORM_CAPABILITY_IDS == {CAPABILITY_FREEFORM, CAPABILITY_SHEET_FREEFORM}
+    assert CAPABILITY_FREEFORM in ALLOWED_CAPABILITY_IDS
+    assert CAPABILITY_SHEET_FREEFORM in ALLOWED_CAPABILITY_IDS
+    # sheet_freeform is NOT statically formula-producing — its shape is
+    # decided per-reply (dynamic), unlike sheet_write_formula/sheet_fix_error.
+    assert CAPABILITY_SHEET_FREEFORM not in FORMULA_PRODUCING_SHEET_CAPABILITIES
+
+
+def test_freeform_capabilities_allow_an_empty_selection():
+    # A freeform prompt may stand on its own (e.g. "outline the next
+    # section" for Docs, or a brand-new active cell for Sheets) — the
+    # prompt itself carries the intent, exactly like sheet_write_formula's
+    # ``intent``.
+    assert CAPABILITY_FREEFORM in CAPABILITIES_ALLOWING_EMPTY_SELECTION
+    assert CAPABILITY_SHEET_FREEFORM in CAPABILITIES_ALLOWING_EMPTY_SELECTION
 
 
 def test_only_write_formula_and_fix_error_are_formula_producing():
@@ -115,3 +139,37 @@ def test_fix_error_prompt_asks_for_a_corrected_formula():
     )
     assert "corrected formula" in system_prompt
     assert "starting with '='" in system_prompt
+
+
+def test_freeform_doc_prompt_carries_the_users_prompt_as_the_instruction():
+    system_prompt, user_prompt = build_prompt(
+        CAPABILITY_FREEFORM,
+        selection_text="The quick brown fox.",
+        context_before="Once upon a time.",
+        context_after="The end.",
+        prompt="Rewrite this as three bullet points",
+    )
+    assert "Rewrite this as three bullet points" in user_prompt
+    assert "The quick brown fox." in user_prompt
+    assert "Once upon a time." in user_prompt
+    # The system prompt gives no fixed instruction of its own — the user's
+    # prompt IS the instruction (this is what distinguishes freeform from
+    # every preset capability).
+    assert "resulting plain" in system_prompt.lower()
+
+
+def test_freeform_sheet_prompt_names_every_engine_function_and_carries_the_prompt():
+    system_prompt, user_prompt = build_prompt(
+        CAPABILITY_SHEET_FREEFORM,
+        selection_text="A1\t10\nB1\t2",
+        context_before="",
+        context_after="",
+        prompt="add a column that is column B times 2",
+    )
+    for function_name in FUNCTION_REGISTRY:
+        assert function_name in system_prompt
+    assert "add a column that is column B times 2" in user_prompt
+    assert "A1\t10" in user_prompt
+    # Freeform must stay able to reply with EITHER a formula or prose,
+    # unlike the single-shape preset sheet capabilities.
+    assert "formula" in system_prompt.lower()

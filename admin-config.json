@@ -103,6 +103,14 @@
           "inputType": "number",
           "min": 0,
           "description": "Hard cap on the surrounding-text window (before/after the selection) forwarded to the LLM."
+        },
+        {
+          "key": "ai_max_prompt_chars",
+          "label": "AI helper max free-text prompt length (characters)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "description": "Hard cap on the user's own instruction for the 'freeform'/'sheet_freeform' capabilities, independent of the selection-length cap above."
         }
       ]
     }

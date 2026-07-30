@@ -217,6 +217,7 @@ class OfficeDocEditorService:
         context_before: str = "",
         context_after: str = "",
         target_language: Optional[str] = None,
+        prompt: str = "",
     ) -> dict:
         _node, document, access = self._resolve_text_document(user_id, node_id)
         if access not in EDIT_CAPABLE_ACCESS:
@@ -232,6 +233,7 @@ class OfficeDocEditorService:
             context_before=context_before,
             context_after=context_after,
             target_language=target_language,
+            prompt=prompt,
         )
         return {
             "capability": capability_id,

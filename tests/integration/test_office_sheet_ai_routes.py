@@ -124,6 +124,43 @@ def test_sheet_ai_route_rejects_a_raw_prompt_field(client, owner):
     assert response.status_code == 400
 
 
+def test_sheet_ai_route_freeform_requires_a_non_empty_prompt(client, owner):
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+    _enable_ai(client, headers, node_id, 1)
+
+    response = client.post(
+        f"/api/v1/office/sheets/{node_id}/ai",
+        json={"capability": "sheet_freeform", "address": "A1"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+
+
+def test_sheet_ai_route_accepts_a_prompt_field_for_sheet_freeform(client, owner):
+    """The opposite of ``test_sheet_ai_route_rejects_a_raw_prompt_field``
+    above — for ``sheet_freeform`` (and only ``sheet_freeform``) a
+    ``prompt`` field is the point, not a rejected field. No LLM connection
+    exists in a fresh test DB, so this reaches the same clean 502 as every
+    other capability — the proof here is that it does NOT 400 on the
+    presence of ``prompt``."""
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+    _enable_ai(client, headers, node_id, 1)
+
+    response = client.post(
+        f"/api/v1/office/sheets/{node_id}/ai",
+        json={
+            "capability": "sheet_freeform",
+            "address": "A1",
+            "prompt": "add a column that is column B times 2",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 502
+    assert "error" in response.get_json()
+
+
 def test_sheet_ai_route_requires_an_address(client, owner):
     _, headers = owner
     node_id = _create_sheet(client, headers).get_json()["id"]
@@ -155,6 +192,28 @@ def test_sheet_ai_budget_exhausted_returns_429(client, owner, monkeypatch):
     response = client.post(
         f"/api/v1/office/sheets/{node_id}/ai",
         json={"capability": "sheet_explain_formula", "address": "A1"},
+        headers=headers,
+    )
+    assert response.status_code == 429
+
+
+def test_sheet_ai_budget_exhausted_returns_429_for_freeform(client, owner, monkeypatch):
+    zero_budget_config = {**office_pkg.DEFAULT_CONFIG, "ai_monthly_call_budget": 0}
+    monkeypatch.setattr(
+        office_pkg, "_current_plugin_config", lambda: zero_budget_config
+    )
+
+    _, headers = owner
+    node_id = _create_sheet(client, headers).get_json()["id"]
+    _enable_ai(client, headers, node_id, 1)
+
+    response = client.post(
+        f"/api/v1/office/sheets/{node_id}/ai",
+        json={
+            "capability": "sheet_freeform",
+            "address": "A1",
+            "prompt": "add a column that is column B times 2",
+        },
         headers=headers,
     )
     assert response.status_code == 429

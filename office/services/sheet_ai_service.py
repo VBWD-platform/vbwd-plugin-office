@@ -35,6 +35,7 @@ from plugins.office.office.sheet.cell import CellAddress, format_cell_reference
 from plugins.office.office.sheet.values import coerce_to_text, is_error
 
 from plugins.office.office.services.ai_capabilities import (
+    CAPABILITY_SHEET_FREEFORM,
     FORMULA_PRODUCING_SHEET_CAPABILITIES,
     SHEET_CAPABILITY_IDS,
 )
@@ -91,6 +92,7 @@ class SheetAiOrchestratorService:
         address: str,
         range_text: Optional[str] = None,
         intent: str = "",
+        prompt: str = "",
     ) -> Dict[str, Any]:
         if capability_id not in SHEET_CAPABILITY_IDS:
             raise OfficeAiInvalidCapabilityError(
@@ -106,7 +108,9 @@ class SheetAiOrchestratorService:
         # Explaining/summarising is a read: any resolved access level may do
         # it (a view share included). Proposing a formula to APPLY needs
         # edit — matches ``save_cells``'s own bar, checked before that
-        # route is ever reached.
+        # route is ever reached. ``sheet_freeform`` is NOT in this
+        # statically-classified set (its reply's shape is not known yet) —
+        # its edit check happens AFTER the reply, below.
         if capability_id in FORMULA_PRODUCING_SHEET_CAPABILITIES:
             if selection.access not in EDIT_CAPABLE_ACCESS:
                 raise OfficeShareForbiddenError(node_id)
@@ -120,10 +124,23 @@ class SheetAiOrchestratorService:
             capability_id,
             selection_text=selection_text,
             intent=intent,
+            prompt=prompt,
         )
-        return self._build_proposal(
+        proposal = self._build_proposal(
             capability_id, proposed_text, connection_slug, selection.active_address
-        ).to_dict()
+        )
+        # ``sheet_freeform`` only now reveals whether it produced a formula
+        # to APPLY (needs edit, same bar as the preset formula capabilities)
+        # or a read-only answer (any resolved access may have it) — the
+        # provider call above already happened and was budgeted/audited;
+        # only the FORBIDDEN proposal is withheld here.
+        if (
+            proposal.kind == PROPOSAL_KIND_FORMULA
+            and capability_id not in FORMULA_PRODUCING_SHEET_CAPABILITIES
+            and selection.access not in EDIT_CAPABLE_ACCESS
+        ):
+            raise OfficeShareForbiddenError(node_id)
+        return proposal.to_dict()
 
     # ------------------------------------------------------------------
     # Internal
@@ -159,7 +176,11 @@ class SheetAiOrchestratorService:
         connection_slug: str,
         active_address: CellAddress,
     ) -> SheetAiProposal:
-        if capability_id in FORMULA_PRODUCING_SHEET_CAPABILITIES:
+        is_formula = capability_id in FORMULA_PRODUCING_SHEET_CAPABILITIES or (
+            capability_id == CAPABILITY_SHEET_FREEFORM
+            and _looks_like_a_formula(proposed_text)
+        )
+        if is_formula:
             return SheetAiProposal(
                 kind=PROPOSAL_KIND_FORMULA,
                 capability=capability_id,
@@ -173,6 +194,19 @@ class SheetAiOrchestratorService:
             connection_slug=connection_slug,
             text=proposed_text,
         )
+
+
+def _looks_like_a_formula(proposed_text: str) -> bool:
+    """Freeform's reply shape is not known ahead of time (the SAME
+    capability id may answer either a question or a request for a formula)
+    — this is the one place that sniffs it, from the model's own reply,
+    exactly the way a human typing into a cell signals "this is a formula"
+    to the engine. A false positive/negative is never a silent
+    misclassification: a ``text`` proposal that WAS meant as a formula is
+    just discarded by the client's Accept/Discard flow, and a ``formula``
+    proposal that is not actually parseable becomes a ``#NAME?``/400 on
+    apply via ``save_cells``, same as ``sheet_write_formula`` today."""
+    return proposed_text.strip().startswith("=")
 
 
 def _cell_value_text(value) -> str:

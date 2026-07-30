@@ -102,6 +102,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # independent of whatever length the client sent (data minimisation).
     "ai_max_selection_chars": 8000,
     "ai_max_context_chars": 2000,
+    # S147 free-text AI helper — the cap on the USER'S OWN prompt for the
+    # ``freeform``/``sheet_freeform`` capabilities, kept deliberately
+    # separate from ``ai_max_selection_chars`` (which bounds the
+    # document/sheet excerpt, a different thing).
+    "ai_max_prompt_chars": 2000,
     # S147-4 (VBWD Spreadsheets, requirement #4) — the row/column ceiling: a
     # cell reference beyond either is a clean 413, never an unbounded
     # in-memory workbook. 100,000 rows x 1,000 columns is generous for the
@@ -589,6 +594,9 @@ def build_ai_service():
         ),
         max_context_chars=config.get(
             "ai_max_context_chars", DEFAULT_CONFIG["ai_max_context_chars"]
+        ),
+        max_prompt_chars=config.get(
+            "ai_max_prompt_chars", DEFAULT_CONFIG["ai_max_prompt_chars"]
         ),
     )
 

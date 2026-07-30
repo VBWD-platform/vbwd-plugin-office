@@ -34,6 +34,7 @@ from vbwd.middleware.auth import (
 from vbwd.utils.pagination import paginate
 
 from .services.access_seeder import USE_PERMISSION
+from .services.ai_capabilities import CAPABILITY_FREEFORM, CAPABILITY_SHEET_FREEFORM
 from .services.document_service import PARENT_ID_UNSET
 from .services.exceptions import (
     OfficeAiBudgetExceededError,
@@ -881,19 +882,23 @@ def doc_presence(node_id):
 @require_auth
 @require_user_permission(USE_PERMISSION)
 def doc_ai(node_id):
-    """The AI helper. ``capability`` is the ONLY instruction the client may
-    send (test #6) — a ``prompt`` field is rejected outright, before the
-    service layer is even reached, so this plugin can never become an open
-    proxy to the operator's paid LLM connection."""
+    """The AI helper. ``capability`` is the instruction the client selects
+    (test #6) — a ``prompt`` field is rejected outright UNLESS the selected
+    capability is ``freeform`` (the one deliberate free-text exception, S147),
+    so this plugin can never become an open proxy to the operator's paid LLM
+    connection via a preset capability's body."""
     body = request.get_json(silent=True) or {}
-    if "prompt" in body:
+    capability = body.get("capability")
+    if not isinstance(capability, str) or not capability:
+        return jsonify({"error": "capability is required"}), 400
+    if "prompt" in body and capability != CAPABILITY_FREEFORM:
         return (
             jsonify({"error": "Raw prompts are not accepted; use 'capability'"}),
             400,
         )
-    capability = body.get("capability")
-    if not isinstance(capability, str) or not capability:
-        return jsonify({"error": "capability is required"}), 400
+    prompt = body.get("prompt", "")
+    if not isinstance(prompt, str):
+        return jsonify({"error": "'prompt' must be a string"}), 400
 
     try:
         result = _doc_editor_service().run_ai_capability(
@@ -904,6 +909,7 @@ def doc_ai(node_id):
             context_before=body.get("context_before", ""),
             context_after=body.get("context_after", ""),
             target_language=body.get("target_language"),
+            prompt=prompt,
         )
     except OfficeNodeNotFoundError:
         return jsonify({"error": "Not found"}), 404
@@ -1325,19 +1331,23 @@ def import_sheet(node_id):
 @require_auth
 @require_user_permission(USE_PERMISSION)
 def sheet_ai(node_id):
-    """The Sheet AI helper (S147-3.5). ``capability`` is the ONLY
-    instruction the client may send — a ``prompt`` field is rejected
-    outright, before the service layer is even reached, same contract as
-    ``doc_ai`` above (one home for that rule, DRY)."""
+    """The Sheet AI helper (S147-3.5, free-text S147). ``capability`` is the
+    instruction the client selects — a ``prompt`` field is rejected outright
+    UNLESS the selected capability is ``sheet_freeform`` (the one deliberate
+    free-text exception), same contract as ``doc_ai`` above (one home for
+    that rule, DRY)."""
     body = request.get_json(silent=True) or {}
-    if "prompt" in body:
+    capability = body.get("capability")
+    if not isinstance(capability, str) or not capability:
+        return jsonify({"error": "capability is required"}), 400
+    if "prompt" in body and capability != CAPABILITY_SHEET_FREEFORM:
         return (
             jsonify({"error": "Raw prompts are not accepted; use 'capability'"}),
             400,
         )
-    capability = body.get("capability")
-    if not isinstance(capability, str) or not capability:
-        return jsonify({"error": "capability is required"}), 400
+    prompt = body.get("prompt", "")
+    if not isinstance(prompt, str):
+        return jsonify({"error": "'prompt' must be a string"}), 400
     address = body.get("address")
     if not isinstance(address, str) or not address:
         return jsonify({"error": "address is required"}), 400
@@ -1350,6 +1360,7 @@ def sheet_ai(node_id):
             address=address,
             range_text=body.get("range"),
             intent=body.get("intent", ""),
+            prompt=prompt,
         )
     except OfficeNodeNotFoundError:
         return jsonify({"error": "Not found"}), 404

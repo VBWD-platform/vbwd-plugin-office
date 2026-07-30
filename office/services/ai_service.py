@@ -43,6 +43,7 @@ from plugins.office.office.services.ai_capabilities import (
     CAPABILITIES_ALLOWING_EMPTY_SELECTION,
     CAPABILITY_SHEET_WRITE_FORMULA,
     CAPABILITY_TRANSLATE,
+    FREEFORM_CAPABILITY_IDS,
     build_prompt,
 )
 from plugins.office.office.services.exceptions import (
@@ -77,6 +78,7 @@ class OfficeAiService:
         default_monthly_call_budget: int,
         max_selection_chars: int,
         max_context_chars: int,
+        max_prompt_chars: int,
         now_provider=datetime.utcnow,
     ) -> None:
         self._llm_connection_service = llm_connection_service
@@ -85,6 +87,7 @@ class OfficeAiService:
         self._default_monthly_call_budget = default_monthly_call_budget
         self._max_selection_chars = max_selection_chars
         self._max_context_chars = max_context_chars
+        self._max_prompt_chars = max_prompt_chars
         self._now_provider = now_provider
 
     def run_capability(
@@ -98,20 +101,33 @@ class OfficeAiService:
         context_after: str = "",
         target_language: Optional[str] = None,
         intent: str = "",
+        prompt: str = "",
     ) -> Tuple[str, str]:
         """Return ``(proposed_text, connection_slug)``. Raises a typed
         exception (never a bare 500) for every rejection path.
 
-        ``intent`` is the one free-text field a client may send (only
-        meaningful for ``sheet_write_formula``) — capped in CHARACTERS to
-        the exact same ``max_selection_chars`` bound as ``selection_text``,
-        never trusted at whatever length the client sent."""
-        self._validate_request(capability_id, selection_text, target_language, intent)
+        ``intent`` is a free-text field meaningful only for
+        ``sheet_write_formula`` — capped in CHARACTERS to the exact same
+        ``max_selection_chars`` bound as ``selection_text``, never trusted
+        at whatever length the client sent.
+
+        ``prompt`` is meaningful only for the two freeform capabilities
+        (``freeform``/``sheet_freeform``) — it IS the instruction the model
+        receives, capped by its OWN ``max_prompt_chars`` bound (never the
+        selection cap, which bounds a different thing). For every other
+        capability it is accepted but never forwarded into what the model
+        is told to do — ``build_prompt`` only ever reads it for the two
+        freeform ids; the route layer additionally rejects a ``prompt``
+        field outright for every other capability, before this is reached."""
+        self._validate_request(
+            capability_id, selection_text, target_language, intent, prompt
+        )
 
         selection_text = selection_text[: self._max_selection_chars]
         context_before = (context_before or "")[: self._max_context_chars]
         context_after = (context_after or "")[: self._max_context_chars]
         intent = (intent or "")[: self._max_selection_chars]
+        prompt = (prompt or "")[: self._max_prompt_chars]
 
         self._enforce_budget(user_id)
 
@@ -122,6 +138,7 @@ class OfficeAiService:
             context_after=context_after,
             target_language=target_language,
             intent=intent,
+            prompt=prompt,
         )
 
         client, connection_slug = self._resolve_client()
@@ -158,6 +175,7 @@ class OfficeAiService:
         selection_text: str,
         target_language: Optional[str],
         intent: str,
+        prompt: str,
     ) -> None:
         if capability_id not in ALLOWED_CAPABILITY_IDS:
             raise OfficeAiInvalidCapabilityError(
@@ -181,6 +199,10 @@ class OfficeAiService:
         ):
             raise OfficeAiInvalidCapabilityError(
                 f"'{capability_id}' requires a non-empty intent"
+            )
+        if capability_id in FREEFORM_CAPABILITY_IDS and not (prompt or "").strip():
+            raise OfficeAiInvalidCapabilityError(
+                f"'{capability_id}' requires a non-empty prompt"
             )
 
     def _enforce_budget(self, user_id) -> None:
