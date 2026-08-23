@@ -85,3 +85,11 @@ and container versions can disagree, and the gate uses the container's.
 BSL 1.1 with a Bitcoin-denominated Additional Use Grant — free for commercial use while annual
 VBWD-attributable sales stay below the value of 6.7 BTC. Change Licence: Apache-2.0. See
 [`LICENSE`](./LICENSE).
+
+## Documentation
+
+Full platform documentation lives at **[vbwd.cc/docs](https://vbwd.cc/docs)**.
+
+- [Plugin system](https://vbwd.cc/docs-plugin-system) — how backend plugins are registered, enabled, and configured
+- [Architecture](https://vbwd.cc/docs-architecture) — platform layering and the core-agnosticism rule
+- [Getting started](https://vbwd.cc/docs-getting-started) — install a VBWD instance and enable plugins
