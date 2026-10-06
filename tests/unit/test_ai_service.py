@@ -8,6 +8,7 @@ from datetime import datetime
 import pytest
 
 from vbwd.llm.errors import LlmError
+from vbwd.services.entitlement import clear_entitlement_provider
 from vbwd.services.llm_connection_service import NoActiveLlmConnectionError
 
 from plugins.office.office.services.ai_service import OfficeAiService
@@ -16,6 +17,18 @@ from plugins.office.office.services.exceptions import (
     OfficeAiInvalidCapabilityError,
     OfficeAiProviderError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _default_entitlement_provider():
+    """Pin the process-global entitlement port to its default.
+
+    Another suite booting the app with the subscription plugin enabled leaves a
+    DB-backed provider registered; these fake-only tests must not inherit it.
+    """
+    clear_entitlement_provider()
+    yield
+    clear_entitlement_provider()
 
 
 class FakeLlmClient:
