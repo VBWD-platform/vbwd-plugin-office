@@ -8,9 +8,13 @@ version = "0.1.0"
 description = "VBWD backend plugin: office (VBWD Office) — self-hosted document suite"
 requires-python = ">=3.11"
 license = { text = "BSL-1.1" }
-# No third-party runtime dependencies in this phase: Flask / SQLAlchemy /
-# Alembic come from the vbwd-backend host.
-dependencies = []
+# Flask / SQLAlchemy / Alembic come from the vbwd-backend host. The plugin-local
+# deps mirror requirements.txt (the clone model installs that file; a pip install
+# reads only this list): openpyxl (.xlsx import/export), python-docx (.docx export).
+dependencies = [
+    "openpyxl==3.1.5",
+    "python-docx==1.1.2",
+]
 
 [tool.setuptools]
 # The repo root IS the plugins/office/ directory; remap it so the wheel
@@ -18,14 +22,9 @@ dependencies = []
 # `packages = ["office"]` would install a TOP-LEVEL `office`, which the plugin
 # manager could never find (the S146 wheel lesson).
 package-dir = { "plugins.office" = "." }
-packages = [
-    "plugins.office",
-    "plugins.office.office",
-    "plugins.office.office.storage",
-    "plugins.office.office.models",
-    "plugins.office.office.repositories",
-    "plugins.office.office.services",
-]
+# The sub-packages are discovered (and prefixed with `plugins.office.`) in
+# setup.py — `packages.find` cannot prefix, and a hand-kept list silently
+# dropped `office.sheet` (ModuleNotFoundError at boot from a pip install).
 
 [tool.setuptools.package-data]
 # Ship everything a pip-installed plugin needs to be self-complete: the config
@@ -35,4 +34,9 @@ packages = [
     "*.json",
     "migrations/*.py",
     "migrations/**/*.py",
+]
+# Non-module runtime files under the source dir (the PDF export HTML templates).
+# Guarded by tests/unit/test_wheel_packaging.py.
+"plugins.office.office" = [
+    "templates/**/*.html",
 ]

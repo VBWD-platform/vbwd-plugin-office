@@ -40,7 +40,10 @@ jobs:
           cache-dependency-path: vbwd-backend/requirements.txt
 
       - name: Install Python dependencies
+        # setuptools + wheel: tests/unit/test_wheel_packaging.py builds the wheel offline
+        # (pip wheel --no-build-isolation).
         run: |
+          pip install "setuptools>=68" wheel
           pip install -r vbwd-backend/requirements.txt
           # The plugin's own runtime deps (openpyxl, for .xlsx import/export).
           pip install -r vbwd-backend/plugins/office/requirements.txt
